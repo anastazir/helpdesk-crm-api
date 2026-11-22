@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     'apps.zones',
     'apps.complaints',
     'apps.exports',
+    'apps.assistant',
     'seed',
 ]
 
@@ -118,6 +119,36 @@ CORS_ALLOWED_ORIGINS = config(
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+OPENROUTER_API_KEY = (
+    config('OPEN_ROUTER_API_KEY_DEV', default='')
+    or config('OPENROUTER_API_KEY', default='')
+)
+OPENROUTER_MODEL = config(
+    'OPENROUTER_MODEL',
+    default='deepseek/deepseek-v4.1-flash-1017',
+)
+OPENROUTER_BASE_URL = config(
+    'OPENROUTER_BASE_URL',
+    default='https://openrouter.ai/api/v1',
+)
+OPENROUTER_TIMEOUT = config('OPENROUTER_TIMEOUT', default=45, cast=int)
+OPENROUTER_PROVIDER_SORT = config('OPENROUTER_PROVIDER_SORT', default='price')
+OPENROUTER_DATA_COLLECTION = config(
+    'OPENROUTER_DATA_COLLECTION',
+    default='deny',
+)
+AI_BRIEFING_ENABLED = config('AI_BRIEFING_ENABLED', default=True, cast=bool)
+AI_BRIEFING_MAX_TOKENS = config('AI_BRIEFING_MAX_TOKENS', default=900, cast=int)
+AI_BRIEFING_TEMPERATURE = config(
+    'AI_BRIEFING_TEMPERATURE',
+    default=0.2,
+    cast=float,
+)
+AI_BRIEFING_REASONING_EFFORT = config(
+    'AI_BRIEFING_REASONING_EFFORT',
+    default='none',
+)
 
 LOGGING = {
     'version': 1,
