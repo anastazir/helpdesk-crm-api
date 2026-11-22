@@ -2,9 +2,11 @@ from django.urls import path
 
 from .views import (
     ChatView,
+    ComplaintAutofillView,
     ComplaintCopilotView,
     DailyBriefingView,
     EngineerPlanView,
+    ExportSummaryView,
     TriageView,
 )
 
@@ -17,9 +19,19 @@ urlpatterns = [
         name='assistant-complaint-copilot',
     ),
     path(
+        'complaint-autofill/',
+        ComplaintAutofillView.as_view(),
+        name='assistant-complaint-autofill',
+    ),
+    path(
         'engineer-plan/',
         EngineerPlanView.as_view(),
         name='assistant-engineer-plan',
+    ),
+    path(
+        'export-summary/',
+        ExportSummaryView.as_view(),
+        name='assistant-export-summary',
     ),
     path('triage/', TriageView.as_view(), name='assistant-triage'),
 ]

@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.exports.serializers import ExportFiltersSerializer
+
 
 class ChatMessageSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=['user', 'assistant'])
@@ -68,6 +70,57 @@ class TriageRequestSerializer(serializers.Serializer):
         allow_blank=True,
         default='',
     )
+    language = serializers.ChoiceField(
+        choices=['en', 'hi'],
+        required=False,
+        default='en',
+    )
+
+class AIRequestLogListSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    user_name = serializers.CharField(source='user.full_name', allow_null=True)
+    user_email = serializers.EmailField(source='user.email', allow_null=True)
+    feature = serializers.CharField()
+    status = serializers.CharField()
+    model = serializers.CharField()
+    provider = serializers.CharField()
+    prompt_tokens = serializers.IntegerField()
+    completion_tokens = serializers.IntegerField()
+    total_tokens = serializers.IntegerField()
+    cost_usd = serializers.DecimalField(max_digits=14, decimal_places=8, allow_null=True)
+    cost_inr = serializers.DecimalField(max_digits=14, decimal_places=4, allow_null=True)
+    latency_ms = serializers.IntegerField()
+    tools_used = serializers.JSONField()
+    error_message = serializers.CharField()
+    created_at = serializers.DateTimeField()
+    request_preview = serializers.SerializerMethodField()
+    response_preview = serializers.SerializerMethodField()
+
+    def get_request_preview(self, obj):
+        return (obj.request_text or '')[:240]
+
+    def get_response_preview(self, obj):
+        return (obj.response_text or '')[:240]
+
+
+class AIRequestLogDetailSerializer(AIRequestLogListSerializer):
+    request_text = serializers.CharField()
+    response_text = serializers.CharField()
+    metadata = serializers.JSONField()
+
+
+class ExportSummaryRequestSerializer(serializers.Serializer):
+    filters = ExportFiltersSerializer(required=False)
+    deduplicate = serializers.BooleanField(required=False, default=False)
+    language = serializers.ChoiceField(
+        choices=['en', 'hi'],
+        required=False,
+        default='en',
+    )
+
+
+class ComplaintAutofillRequestSerializer(serializers.Serializer):
+    transcript = serializers.CharField(max_length=5000)
     language = serializers.ChoiceField(
         choices=['en', 'hi'],
         required=False,

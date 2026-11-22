@@ -422,11 +422,18 @@ def _language_name(language):
 
 
 def _result_meta(data, latency, usage=None):
+    resolved_usage = usage or _usage_from(data)
+    cost = resolved_usage.get('cost')
+    resolved_usage['cost_inr'] = (
+        round(float(cost) * settings.USD_TO_INR_RATE, 4)
+        if cost is not None
+        else None
+    )
     return {
         'generated_at': timezone.now().isoformat(),
         'model': data.get('model') or settings.OPENROUTER_MODEL,
         'provider': data.get('provider'),
-        'usage': usage or _usage_from(data),
+        'usage': resolved_usage,
         'latency_ms': latency,
     }
 
@@ -671,6 +678,123 @@ def generate_triage(
         'urgency': urgency,
         'reason': str(parsed.get('reason') or '')[:1000],
         'next_step': str(parsed.get('next_step') or '')[:500],
+        'language': language,
+        **_result_meta(data, latency),
+    }
+
+
+EXPORT_SUMMARY_PROMPT = """
+You are a read-only reporting analyst for an internal help desk. Use only the
+supplied export data. Do not invent figures, IDs, or causes. Summarize the
+filtered export for an administrator in plain text with short sections:
+Overview, Status and zones, Issues, Attention needed, Suggested follow-up.
+Mention exact totals and complaint IDs only when supplied. Do not include caller
+identity details. Use plain text only, with no Markdown syntax. Keep it under
+180 words. Answer in {language_name}.
+""".strip()
+
+AUTOFILL_PROMPT = """
+You extract complaint details from a caseworker's spoken transcript. Use only
+facts explicitly stated in the transcript. Never invent names, numbers, serials,
+zones, or issue types. Return JSON matching the schema. Use null when a field is
+not clearly stated. Extract every explicitly stated field, especially the phone number and
+serial numbers. Phone numbers may be spoken with spaces or +91; return only the
+10 local digits. Choose issue names only from the supplied available list. Choose a zone only from the supplied zone
+list. Put any extra context that does not fit a field into notes.
+""".strip()
+
+AUTOFILL_SCHEMA = {
+    'name': 'complaint_autofill',
+    'strict': True,
+    'schema': {
+        'type': 'object',
+        'properties': {
+            'caller_name': {'type': ['string', 'null']},
+            'caller_phone': {'type': ['string', 'null']},
+            'zone': {'type': ['string', 'null']},
+            'department': {'type': ['string', 'null']},
+            'designation': {'type': ['string', 'null']},
+            'address': {'type': ['string', 'null']},
+            'pincode': {'type': ['string', 'null']},
+            'cpu_serial': {'type': ['string', 'null']},
+            'monitor_serial': {'type': ['string', 'null']},
+            'issue_names': {
+                'type': 'array',
+                'items': {'type': 'string'},
+                'maxItems': 3,
+            },
+            'others_description': {'type': ['string', 'null']},
+            'notes': {'type': ['string', 'null']},
+        },
+        'required': [
+            'caller_name',
+            'caller_phone',
+            'zone',
+            'department',
+            'designation',
+            'address',
+            'pincode',
+            'cpu_serial',
+            'monitor_serial',
+            'issue_names',
+            'others_description',
+            'notes',
+        ],
+        'additionalProperties': False,
+    },
+}
+
+
+def generate_export_summary(context, language='en'):
+    system = EXPORT_SUMMARY_PROMPT.format(
+        language_name=_language_name(language)
+    )
+    content, data, latency = _simple_completion(
+        system,
+        json.dumps(context, ensure_ascii=False),
+        settings.AI_COPILOT_MAX_TOKENS,
+        operation='AI export summary',
+    )
+    return {
+        'text': content,
+        'language': language,
+        **_result_meta(data, latency),
+    }
+
+
+def generate_complaint_autofill(
+    transcript,
+    available_issues,
+    available_zones,
+    language='en',
+):
+    user_content = json.dumps(
+        {
+            'transcript': transcript,
+            'available_issues': available_issues,
+            'available_zones': available_zones,
+            'reply_language': _language_name(language),
+        },
+        ensure_ascii=False,
+    )
+    content, data, latency = _simple_completion(
+        AUTOFILL_PROMPT,
+        user_content,
+        settings.AI_COPILOT_MAX_TOKENS,
+        response_format={
+            'type': 'json_schema',
+            'json_schema': AUTOFILL_SCHEMA,
+        },
+        operation='Complaint autofill',
+    )
+    try:
+        parsed = json.loads(content)
+    except ValueError as exc:
+        raise BriefingUpstreamError(
+            'The autofill service returned an invalid response.'
+        ) from exc
+    return {
+        'fields': parsed,
         'language': language,
         **_result_meta(data, latency),
     }

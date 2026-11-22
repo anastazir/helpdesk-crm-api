@@ -41,3 +41,5 @@ services:
         value: "True"
       - key: AI_BRIEFING_REASONING_EFFORT
         value: none
+      - key: USD_TO_INR_RATE
+        value: "88.0"

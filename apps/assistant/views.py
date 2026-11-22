@@ -1,12 +1,17 @@
+import json
 import logging
+import re
 
 from django.conf import settings
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 from apps.complaints.models import Complaint, IssueType
+from apps.exports.builder import get_matching_complaints, deduplicate_complaints
+from apps.zones.models import Zone
 from core.responses import error_response, success_response
 
 from .serializers import (
@@ -14,7 +19,10 @@ from .serializers import (
     CopilotRequestSerializer,
     EngineerPlanRequestSerializer,
     TriageRequestSerializer,
+    ExportSummaryRequestSerializer,
+    ComplaintAutofillRequestSerializer,
 )
+from .audit import log_ai_request
 from .services import (
     BriefingConfigurationError,
     BriefingInputError,
@@ -25,6 +33,8 @@ from .services import (
     generate_complaint_copilot,
     generate_engineer_plan,
     generate_triage,
+    generate_export_summary,
+    generate_complaint_autofill,
 )
 from .tools import (
     build_complaint_context,
@@ -85,6 +95,14 @@ class DailyBriefingView(APIView):
         try:
             context = build_briefing_context()
             result = generate_briefing(context)
+            log_ai_request(
+                user=request.user,
+                feature='briefing',
+                status='success',
+                request_text="Today's daily briefing",
+                response_text=result.get('briefing', ''),
+                result=result,
+            )
             logger.info(
                 '[AI BRIEFING] user=%s cost=%s tokens=%s latency_ms=%s',
                 request.user.id,
@@ -97,6 +115,13 @@ class DailyBriefingView(APIView):
                 message='Daily briefing generated.',
             )
         except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='briefing',
+                status='error',
+                request_text="Today's daily briefing",
+                error_message=str(exc),
+            )
             return _ai_failure_response(exc)
         finally:
             cache.delete(lock_key)
@@ -128,6 +153,19 @@ class ChatView(APIView):
                 serializer.validated_data.get('history', []),
                 serializer.validated_data.get('language', 'en'),
             )
+            log_ai_request(
+                user=request.user,
+                feature='chat',
+                status='success',
+                request_text=serializer.validated_data['message'],
+                response_text=result.get('reply', ''),
+                result=result,
+                metadata={
+                    'history': serializer.validated_data.get('history', []),
+                    'tools_used': result.get('tools_used', []),
+                    'references': result.get('references', []),
+                },
+            )
             logger.info(
                 '[AI CHAT] user=%s tools=%s cost=%s tokens=%s latency_ms=%s',
                 request.user.id,
@@ -138,6 +176,13 @@ class ChatView(APIView):
             )
             return success_response(result)
         except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='chat',
+                status='error',
+                request_text=serializer.validated_data.get('message', ''),
+                error_message=str(exc),
+            )
             return _ai_failure_response(exc)
         finally:
             cache.delete(lock_key)
@@ -191,6 +236,18 @@ class ComplaintCopilotView(APIView):
                 data.get('language', 'en'),
                 data.get('instruction', ''),
             )
+            log_ai_request(
+                user=request.user,
+                feature='complaint_copilot',
+                status='success',
+                request_text=(
+                    f"Complaint {complaint.id}: {data['task']} "
+                    f"{data.get('instruction', '')}"
+                ).strip(),
+                response_text=result.get('text', ''),
+                result=result,
+                metadata={'complaint_id': complaint.id, 'task': data['task']},
+            )
             logger.info(
                 '[AI COPILOT] user=%s complaint=%s task=%s cost=%s',
                 request.user.id,
@@ -200,6 +257,13 @@ class ComplaintCopilotView(APIView):
             )
             return success_response(result)
         except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='complaint_copilot',
+                status='error',
+                request_text=f"Complaint {data['complaint_id']}: {data['task']}",
+                error_message=str(exc),
+            )
             return _ai_failure_response(exc)
 
 
@@ -234,6 +298,14 @@ class EngineerPlanView(APIView):
                 [build_complaint_context(complaint) for complaint in complaints],
                 serializer.validated_data.get('language', 'en'),
             )
+            log_ai_request(
+                user=request.user,
+                feature='engineer_plan',
+                status='success',
+                request_text='Engineer day plan',
+                response_text=result.get('text', ''),
+                result=result,
+            )
             logger.info(
                 '[AI PLAN] user=%s cost=%s tokens=%s',
                 request.user.id,
@@ -242,6 +314,13 @@ class EngineerPlanView(APIView):
             )
             return success_response(result)
         except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='engineer_plan',
+                status='error',
+                request_text='Engineer day plan',
+                error_message=str(exc),
+            )
             return _ai_failure_response(exc)
 
 
@@ -301,6 +380,18 @@ class TriageView(APIView):
                 for name in result.get('suggested_issues', [])
                 if name in name_to_issue
             ]
+            log_ai_request(
+                user=request.user,
+                feature='triage',
+                status='success',
+                request_text=description or ', '.join(selected_issues),
+                response_text=json.dumps(result, ensure_ascii=False),
+                result=result,
+                metadata={
+                    'selected_issues': selected_issues,
+                    'urgency': result.get('urgency'),
+                },
+            )
             logger.info(
                 '[AI TRIAGE] user=%s suggestions=%s urgency=%s cost=%s',
                 request.user.id,
@@ -310,4 +401,207 @@ class TriageView(APIView):
             )
             return success_response(result)
         except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='triage',
+                status='error',
+                request_text=description or ', '.join(selected_issues),
+                error_message=str(exc),
+            )
+            return _ai_failure_response(exc)
+
+
+
+class ExportSummaryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role != 'admin':
+            return _role_forbidden('AI export summaries are available to admins only.')
+
+        serializer = ExportSummaryRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                'Please check the export summary request.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = serializer.validated_data
+        filters = data.get('filters') or {}
+        all_matching = get_matching_complaints(filters=filters, deduplicate=False)
+        matching = (
+            deduplicate_complaints(all_matching)
+            if data.get('deduplicate')
+            else all_matching
+        )
+        status_counts = {}
+        zone_counts = {}
+        issue_counts = {}
+        unresolved = []
+        now = timezone.now()
+        for complaint in matching:
+            label = complaint.get_status_display()
+            status_counts[label] = status_counts.get(label, 0) + 1
+            zone_name = complaint.zone.name if complaint.zone else 'No zone'
+            zone_counts[zone_name] = zone_counts.get(zone_name, 0) + 1
+            for issue in complaint.issues.all():
+                issue_counts[issue.name] = issue_counts.get(issue.name, 0) + 1
+            if complaint.status != 'closed':
+                unresolved.append(complaint)
+
+        oldest = [
+            {
+                'id': complaint.id,
+                'status': complaint.get_status_display(),
+                'zone': complaint.zone.name if complaint.zone else None,
+                'age_days': max(
+                    0,
+                    int((now - complaint.created_at).total_seconds() // 86400),
+                ),
+            }
+            for complaint in sorted(unresolved, key=lambda item: item.created_at)[:5]
+        ]
+        context = {
+            'total_matching': len(all_matching),
+            'after_deduplication': len(matching),
+            'deduplicated_count': len(all_matching) - len(matching),
+            'status_counts': dict(
+                sorted(status_counts.items(), key=lambda item: -item[1])
+            ),
+            'zone_counts': dict(
+                sorted(zone_counts.items(), key=lambda item: -item[1])[:8]
+            ),
+            'issue_counts': dict(
+                sorted(issue_counts.items(), key=lambda item: -item[1])[:8]
+            ),
+            'sla_risk_over_7_days': sum(
+                1
+                for complaint in unresolved
+                if (now - complaint.created_at).days > 7
+            ),
+            'oldest_unresolved': oldest,
+            'filters': {
+                'date_from': filters.get('date_from'),
+                'date_to': filters.get('date_to'),
+            },
+            'as_of': now.isoformat(),
+        }
+
+        try:
+            result = generate_export_summary(
+                context,
+                data.get('language', 'en'),
+            )
+            log_ai_request(
+                user=request.user,
+                feature='export_summary',
+                status='success',
+                request_text='AI summary of the current export filters',
+                response_text=result.get('text', ''),
+                result=result,
+                metadata={
+                    'filters': {
+                        key: (value.isoformat() if hasattr(value, 'isoformat') else value)
+                        for key, value in (serializer.validated_data.get('filters') or {}).items()
+                    },
+                },
+            )
+            return success_response(result)
+        except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='export_summary',
+                status='error',
+                request_text='AI summary of the current export filters',
+                error_message=str(exc),
+            )
+            return _ai_failure_response(exc)
+
+
+class ComplaintAutofillView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role not in ('admin', 'helpdesk'):
+            return _role_forbidden(
+                'Only Admin and Help Desk users can use complaint autofill.'
+            )
+
+        serializer = ComplaintAutofillRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                'Please check the autofill transcript.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        transcript = serializer.validated_data['transcript'].strip()
+        if not transcript:
+            return error_response(
+                'Dictate or enter the complaint details first.',
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        issues = list(IssueType.objects.filter(is_active=True).order_by('order'))
+        zones = list(Zone.objects.order_by('name'))
+        try:
+            result = generate_complaint_autofill(
+                transcript,
+                [issue.name for issue in issues],
+                [zone.name for zone in zones],
+                serializer.validated_data.get('language', 'en'),
+            )
+            fields = result.get('fields') or {}
+            phone = re.sub(r'\D', '', str(fields.get('caller_phone') or ''))
+            if not phone:
+                digits = re.sub(r'\D', '', transcript)
+                match = re.search(r'(?:91)?0?([6-9]\d{9})', digits)
+                if match:
+                    phone = match.group(1)
+            if phone:
+                phone = phone[-10:]
+                fields['caller_phone'] = phone
+            pincode = re.sub(r'\D', '', str(fields.get('pincode') or ''))
+            fields['pincode'] = pincode[-6:] if len(pincode) >= 6 else None
+            issue_by_name = {issue.name.lower(): issue for issue in issues}
+            suggested_issues = []
+            for name in fields.get('issue_names') or []:
+                issue = issue_by_name.get(str(name).strip().lower())
+                if issue and issue not in suggested_issues:
+                    suggested_issues.append(issue)
+            zone = None
+            zone_name = fields.get('zone')
+            if zone_name:
+                zone = next(
+                    (item for item in zones if item.name.lower() == str(zone_name).strip().lower()),
+                    None,
+                )
+            result['suggested_issues'] = [
+                {'id': issue.id, 'name': issue.name}
+                for issue in suggested_issues
+            ]
+            result['suggested_issue_ids'] = [issue.id for issue in suggested_issues]
+            result['zone_id'] = zone.id if zone else None
+            result['zone_name'] = zone.name if zone else None
+            result.pop('fields', None)
+            result['fields'] = fields
+            log_ai_request(
+                user=request.user,
+                feature='complaint_autofill',
+                status='success',
+                request_text=transcript,
+                response_text=json.dumps(result, ensure_ascii=False),
+                result=result,
+                metadata={'suggested_issue_ids': result['suggested_issue_ids']},
+            )
+            return success_response(result)
+        except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='complaint_autofill',
+                status='error',
+                request_text=transcript,
+                error_message=str(exc),
+            )
             return _ai_failure_response(exc)

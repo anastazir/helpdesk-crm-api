@@ -181,3 +181,5 @@ AI_CHAT_REASONING_EFFORT = config(
 AI_COPILOT_MAX_TOKENS = config('AI_COPILOT_MAX_TOKENS', default=700, cast=int)
 AI_PLAN_MAX_TOKENS = config('AI_PLAN_MAX_TOKENS', default=700, cast=int)
 AI_TRIAGE_MAX_TOKENS = config('AI_TRIAGE_MAX_TOKENS', default=500, cast=int)
+
+USD_TO_INR_RATE = config('USD_TO_INR_RATE', default=88.0, cast=float)

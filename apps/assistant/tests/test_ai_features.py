@@ -5,6 +5,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from apps.assistant.models import AIRequestLog
 from apps.assistant.tools import execute_tool
 from apps.complaints.models import (
     Complaint,
@@ -280,3 +281,101 @@ class AssistantFeatureAPITest(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+    @patch('apps.assistant.views.generate_export_summary')
+    def test_export_summary_is_admin_only(self, summary):
+        summary.return_value = {
+            'text': 'Overview: 25 complaints.',
+            'language': 'en',
+            **result_meta(),
+        }
+        self.client.force_authenticate(self.helpdesk)
+        forbidden = self.client.post(
+            reverse('assistant-export-summary'),
+            {'filters': {}, 'deduplicate': False, 'language': 'en'},
+            format='json',
+        )
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.admin)
+        allowed = self.client.post(
+            reverse('assistant-export-summary'),
+            {'filters': {}, 'deduplicate': False, 'language': 'en'},
+            format='json',
+        )
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK)
+        self.assertEqual(allowed.data['data']['text'], 'Overview: 25 complaints.')
+
+    @patch('apps.assistant.views.generate_complaint_autofill')
+    def test_autofill_maps_issue_and_zone(self, autofill):
+        autofill.return_value = {
+            'fields': {
+                'caller_name': 'Ramesh',
+                'caller_phone': None,
+                'zone': 'Feature Zone',
+                'department': 'Revenue',
+                'designation': None,
+                'address': None,
+                'pincode': None,
+                'cpu_serial': 'CPU-1',
+                'monitor_serial': None,
+                'issue_names': ['Printer'],
+                'others_description': None,
+                'notes': None,
+            },
+            'language': 'en',
+            **result_meta(),
+        }
+        self.client.force_authenticate(self.helpdesk)
+
+        response = self.client.post(
+            reverse('assistant-complaint-autofill'),
+            {
+                'transcript': 'Ramesh, phone 98765 43210, printer issue, Feature Zone',
+                'language': 'en',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data['data']['suggested_issue_ids'],
+            [self.issue.id],
+        )
+        self.assertEqual(response.data['data']['zone_id'], self.zone.id)
+        self.assertEqual(
+            response.data['data']['fields']['caller_phone'],
+            '9876543210',
+        )
+
+    def test_ai_logs_are_admin_only_and_include_inr_cost(self):
+        AIRequestLog.objects.create(
+            user=self.admin,
+            feature='chat',
+            status='success',
+            request_text='What is at risk?',
+            response_text='Two complaints.',
+            total_tokens=120,
+            cost_usd='0.00100000',
+            cost_inr='0.0880',
+        )
+        self.client.force_authenticate(self.helpdesk)
+        forbidden = self.client.get(reverse('ai-log-list'))
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.admin)
+        listing = self.client.get(reverse('ai-log-list'))
+        self.assertEqual(listing.status_code, status.HTTP_200_OK)
+        self.assertEqual(listing.data['data']['results'][0]['cost_inr'], '0.0880')
+
+        summary = self.client.get(reverse('ai-log-summary'))
+        self.assertEqual(summary.status_code, status.HTTP_200_OK)
+        self.assertEqual(summary.data['data']['total_requests'], 1)
+        self.assertEqual(summary.data['data']['total_cost_inr'], 0.088)
+
+        detail = self.client.get(
+            reverse('ai-log-detail', args=[listing.data['data']['results'][0]['id']])
+        )
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail.data['data']['request_text'], 'What is at risk?')
