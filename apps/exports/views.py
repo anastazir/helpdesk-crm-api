@@ -11,8 +11,13 @@ from rest_framework.views import APIView
 from core.permissions import IsAdminOrHD
 from core.responses import error_response, success_response
 
-from .builder import build_workbook, get_matching_complaints
-from .serializers import ExportDownloadSerializer, ExportPreviewSerializer
+from .builder import (
+    build_workbook,
+    deduplicate_complaints,
+    get_column_value,
+    get_matching_complaints,
+)
+from .serializers import COLUMN_HEADERS, ExportDownloadSerializer, ExportPreviewSerializer
 
 logger = logging.getLogger('apps.exports')
 
@@ -34,19 +39,35 @@ class ExportPreviewView(APIView):
 
         filters = serializer.validated_data.get('filters') or {}
         deduplicate = serializer.validated_data.get('deduplicate', False)
+        if 'columns' in serializer.validated_data:
+            columns = serializer.validated_data.get('columns') or []
+        else:
+            columns = list(COLUMN_HEADERS.keys())
 
-        complaints = get_matching_complaints(filters=filters, deduplicate=deduplicate)
-        after_deduplication = len(complaints)
+        all_matching = get_matching_complaints(filters=filters, deduplicate=False)
+        if deduplicate:
+            matching = deduplicate_complaints(all_matching)
+        else:
+            matching = all_matching
 
-        total_matching = get_matching_complaints(
-            filters=filters, deduplicate=False
-        )
-        total_matching_count = len(total_matching)
+        total_matching_count = len(all_matching)
+        after_deduplication = len(matching)
+        preview_complaints = matching[:10]
+
+        rows = [
+            {
+                column: get_column_value(complaint, column)
+                for column in columns
+            }
+            for complaint in preview_complaints
+        ]
 
         return success_response(data={
             'total_matching': total_matching_count,
             'after_deduplication': after_deduplication,
             'deduplicated_count': total_matching_count - after_deduplication,
+            'columns': columns,
+            'rows': rows,
         })
 
 

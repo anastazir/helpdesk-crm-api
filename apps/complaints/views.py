@@ -50,6 +50,20 @@ logger = logging.getLogger('apps.complaints')
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png'}
 
+
+def _split_query_values(request, name):
+    values = []
+    for raw in request.query_params.getlist(name):
+        values.extend(part.strip() for part in raw.split(',') if part.strip())
+    return values
+
+
+def _parse_integer_values(values):
+    try:
+        return [int(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+
 DEDICATED_TRANSITIONS = {
     ('open', 'assigned'): 'Use the assign endpoint to assign an engineer.',
     ('in_progress', 'parts_requested'): 'Use the job-note endpoint to request parts.',
@@ -129,28 +143,27 @@ class ComplaintViewSet(viewsets.GenericViewSet):
     def list(self, request):
         queryset = self.get_queryset()
 
-        status_value = request.query_params.get('status')
-        if status_value:
-            queryset = queryset.filter(status=status_value)
+        status_values = _split_query_values(request, 'status')
+        if status_values:
+            queryset = queryset.filter(status__in=status_values)
 
-        zone = request.query_params.get('zone')
-        if zone:
-            try:
-                queryset = queryset.filter(zone_id=int(zone))
-            except (TypeError, ValueError):
-                return error_response('Invalid zone filter.', 'zone must be an integer.')
+        zone_values = _parse_integer_values(_split_query_values(request, 'zone'))
+        if zone_values is None:
+            return error_response('Invalid zone filter.', 'zone must be an integer.')
+        if zone_values:
+            queryset = queryset.filter(zone_id__in=zone_values)
 
-        assigned_engineer = request.query_params.get('assigned_engineer')
-        if assigned_engineer:
-            try:
-                engineer_id = int(assigned_engineer)
-            except (TypeError, ValueError):
-                return error_response(
-                    'Invalid assigned_engineer filter.',
-                    'assigned_engineer must be an integer.',
-                )
+        engineer_values = _parse_integer_values(
+            _split_query_values(request, 'assigned_engineer')
+        )
+        if engineer_values is None:
+            return error_response(
+                'Invalid assigned_engineer filter.',
+                'assigned_engineer must be an integer.',
+            )
+        if engineer_values:
             queryset = queryset.filter(
-                assignments__engineer_id=engineer_id,
+                assignments__engineer_id__in=engineer_values,
                 assignments__unassigned_at__isnull=True,
             ).distinct()
 
@@ -404,6 +417,17 @@ class ComplaintViewSet(viewsets.GenericViewSet):
                 f'Invalid status transition from {current_status} to {new_status}.',
                 'status',
             )
+
+        if (
+            new_status == 'resolved'
+            and request.user.role == 'engineer'
+            and not complaint.uploads.exists()
+        ):
+            message = (
+                'Upload the signed Service Call Report before marking this '
+                'complaint as resolved.'
+            )
+            return error_response(message, None, status.HTTP_400_BAD_REQUEST)
 
         complaint.status = new_status
         complaint.save(update_fields=['status'])

@@ -37,6 +37,7 @@ class ComplaintListSerializer(serializers.ModelSerializer):
     zone = ComplaintZoneMiniSerializer(read_only=True)
     issues = IssueTypeMiniSerializer(many=True, read_only=True)
     assigned_engineer = serializers.SerializerMethodField()
+    created_by = UserMiniSerializer(read_only=True)
     time_open_seconds = serializers.SerializerMethodField()
     time_in_status_seconds = serializers.SerializerMethodField()
 
@@ -44,8 +45,8 @@ class ComplaintListSerializer(serializers.ModelSerializer):
         model = Complaint
         fields = [
             'id', 'caller_name', 'caller_phone', 'zone', 'issues', 'status',
-            'assigned_engineer', 'created_at', 'time_open_seconds',
-            'time_in_status_seconds',
+            'assigned_engineer', 'created_by', 'created_at',
+            'time_open_seconds', 'time_in_status_seconds',
         ]
 
     @extend_schema_field(OpenApiTypes.STR)

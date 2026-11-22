@@ -164,9 +164,13 @@ class UserViewSet(viewsets.GenericViewSet):
     def list(self, request):
         queryset = self.get_queryset()
 
-        role = request.query_params.get('role')
-        if role:
-            queryset = queryset.filter(role=role)
+        role_values = []
+        for raw in request.query_params.getlist('role'):
+            role_values.extend(
+                part.strip() for part in raw.split(',') if part.strip()
+            )
+        if role_values:
+            queryset = queryset.filter(role__in=role_values)
 
         is_active = request.query_params.get('is_active')
         if is_active is not None:

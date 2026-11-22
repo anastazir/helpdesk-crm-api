@@ -15,11 +15,17 @@ def apply_filters(queryset, filters):
     filters = filters or {}
 
     zone_id = filters.get('zone_id')
-    if zone_id is not None:
+    zone_ids = filters.get('zone_ids') or []
+    if zone_ids:
+        queryset = queryset.filter(zone_id__in=zone_ids)
+    elif zone_id is not None:
         queryset = queryset.filter(zone_id=zone_id)
 
     status_value = filters.get('status')
-    if status_value:
+    statuses = filters.get('statuses') or []
+    if statuses:
+        queryset = queryset.filter(status__in=statuses)
+    elif status_value:
         queryset = queryset.filter(status=status_value)
 
     date_from = filters.get('date_from')
@@ -31,7 +37,13 @@ def apply_filters(queryset, filters):
         queryset = queryset.filter(created_at__date__lte=date_to)
 
     assigned_engineer_id = filters.get('assigned_engineer_id')
-    if assigned_engineer_id is not None:
+    assigned_engineer_ids = filters.get('assigned_engineer_ids') or []
+    if assigned_engineer_ids:
+        queryset = queryset.filter(
+            assignments__engineer_id__in=assigned_engineer_ids,
+            assignments__unassigned_at__isnull=True,
+        ).distinct()
+    elif assigned_engineer_id is not None:
         queryset = queryset.filter(
             assignments__engineer_id=assigned_engineer_id,
             assignments__unassigned_at__isnull=True,

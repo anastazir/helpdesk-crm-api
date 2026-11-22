@@ -26,12 +26,23 @@ COLUMN_CHOICES = [(key, key) for key in COLUMN_HEADERS]
 
 class ExportFiltersSerializer(serializers.Serializer):
     zone_id = serializers.IntegerField(required=False, allow_null=True)
+    zone_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, allow_empty=True
+    )
     status = serializers.ChoiceField(
         choices=STATUS_CHOICES, required=False, allow_null=True
+    )
+    statuses = serializers.ListField(
+        child=serializers.ChoiceField(choices=STATUS_CHOICES),
+        required=False,
+        allow_empty=True,
     )
     date_from = serializers.DateField(required=False, allow_null=True)
     date_to = serializers.DateField(required=False, allow_null=True)
     assigned_engineer_id = serializers.IntegerField(required=False, allow_null=True)
+    assigned_engineer_ids = serializers.ListField(
+        child=serializers.IntegerField(), required=False, allow_empty=True
+    )
     cpu_serial_contains = serializers.CharField(
         required=False, allow_null=True, allow_blank=True
     )
@@ -45,6 +56,11 @@ class ExportFiltersSerializer(serializers.Serializer):
 
 
 class ExportPreviewSerializer(serializers.Serializer):
+    columns = serializers.ListField(
+        child=serializers.ChoiceField(choices=COLUMN_CHOICES),
+        required=False,
+        allow_empty=True,
+    )
     filters = ExportFiltersSerializer(required=False)
     deduplicate = serializers.BooleanField(required=False, default=False)
 

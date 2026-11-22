@@ -1,6 +1,6 @@
 from rest_framework import status
 
-from apps.complaints.models import JobNote, StatusHistory
+from apps.complaints.models import FileUpload, JobNote, StatusHistory
 from core.tests.base import BaseAPITest
 
 
@@ -46,10 +46,25 @@ class StatusTransitionTest(BaseAPITest):
 
     def test_in_progress_to_resolved_by_engineer(self):
         complaint = self.prepare('in_progress')
+        FileUpload.objects.create(
+            complaint=complaint,
+            file='complaint_uploads/test.jpg',
+            file_type='image',
+            original_name='test.jpg',
+            upload_batch=1,
+            uploaded_by=self.engineer,
+        )
         response = self.set_status(complaint, 'resolved', self.engineer)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         complaint.refresh_from_db()
         self.assertEqual(complaint.status, 'resolved')
+
+    def test_resolve_requires_upload(self):
+        complaint = self.prepare('in_progress')
+        response = self.set_status(complaint, 'resolved', self.engineer)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        complaint.refresh_from_db()
+        self.assertEqual(complaint.status, 'in_progress')
 
     def test_resolved_to_closed_by_hd(self):
         complaint = self.prepare('resolved')

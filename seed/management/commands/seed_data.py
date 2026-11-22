@@ -1,7 +1,9 @@
 import logging
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.utils import timezone
 
 from apps.complaints.models import (
     Comment,
@@ -46,13 +48,13 @@ ISSUE_NAMES = [
 ]
 
 USER_ROWS = [
-    ('Admin User', 'admin@crm.in', 'Admin@123', 'admin', [], True),
-    ('Priya Sharma', 'priya@crm.in', 'HD@123', 'helpdesk', [], True),
-    ('Meera Kapoor', 'meera@crm.in', 'HD@123', 'helpdesk', [], True),
-    ('Ravi Kumar', 'ravi@crm.in', 'Eng@123', 'engineer', ['Zone North', 'Zone South'], True),
-    ('Arjun Nambiar', 'arjun@crm.in', 'Eng@123', 'engineer', ['Zone Central', 'Zone East'], True),
-    ('Pooja Hegde', 'pooja@crm.in', 'Eng@123', 'engineer', ['Zone South', 'Zone West'], True),
-    ('Deepak Verma', 'deepak@crm.in', 'Eng@123', 'engineer', ['Zone East'], False),
+    ('Admin User', 'admin@crm.in', '1234', 'admin', [], True),
+    ('Priya Sharma', 'priya@crm.in', '1234', 'helpdesk', [], True),
+    ('Meera Kapoor', 'meera@crm.in', '1234', 'helpdesk', [], True),
+    ('Ravi Kumar', 'ravi@crm.in', '1234', 'engineer', ['Zone North', 'Zone South'], True),
+    ('Arjun Nambiar', 'arjun@crm.in', '1234', 'engineer', ['Zone Central', 'Zone East'], True),
+    ('Pooja Hegde', 'pooja@crm.in', '1234', 'engineer', ['Zone South', 'Zone West'], True),
+    ('Deepak Verma', 'deepak@crm.in', '1234', 'engineer', ['Zone East'], False),
 ]
 
 CALLER_NAMES = [
@@ -336,4 +338,34 @@ class Command(BaseCommand):
                 body=COMMENT_BODIES[position % len(COMMENT_BODIES)],
             )
 
+        self.backdate_complaints(complaints)
         return complaints
+
+    def backdate_complaints(self, complaints):
+        now = timezone.now()
+
+        for index, complaint in enumerate(complaints):
+            age_days = index % 18
+            age_hours = (index * 5) % 24
+            created_at = now - timedelta(
+                days=age_days,
+                hours=age_hours,
+                minutes=(index * 7) % 60,
+            )
+            Complaint.objects.filter(pk=complaint.pk).update(created_at=created_at)
+
+            entries = list(complaint.status_history.order_by('id'))
+            for position, entry in enumerate(entries):
+                event_time = created_at + timedelta(hours=position * 4)
+                if event_time >= now - timedelta(minutes=5):
+                    event_time = now - timedelta(minutes=(len(entries) - position) * 5)
+                StatusHistory.objects.filter(pk=entry.pk).update(changed_at=event_time)
+
+            if complaint.status == 'closed':
+                closed_entry = complaint.status_history.filter(
+                    new_status='closed'
+                ).order_by('-changed_at').first()
+                if closed_entry:
+                    StatusHistory.objects.filter(pk=closed_entry.pk).update(
+                        changed_at=now - timedelta(minutes=30 + index)
+                    )
