@@ -12,6 +12,7 @@ from apps.complaints.models import (
     Complaint,
     ComplaintAssignment,
     IssueType,
+    StatusHistory,
 )
 from apps.users.models import User
 from apps.zones.models import Zone
@@ -109,6 +110,37 @@ class AssistantFeatureAPITest(APITestCase):
         self.assertNotIn('caller_name', complaint)
         self.assertNotIn('aadhaar', complaint)
         self.assertNotIn('address', complaint)
+        self.assertEqual(complaint['created_by']['name'], 'Feature Admin')
+        self.assertEqual(complaint['created_by']['role'], 'admin')
+        self.assertEqual(
+            complaint['assignments'][0]['assigned_by']['name'],
+            'Feature Admin',
+        )
+
+    def test_complaint_tool_returns_full_status_history_with_actors(self):
+        for index in range(10):
+            StatusHistory.objects.create(
+                complaint=self.complaint,
+                previous_status='open' if index == 0 else 'assigned',
+                new_status='assigned' if index == 0 else 'in_progress',
+                changed_by=self.helpdesk if index % 2 else self.admin,
+                remark=f'Step {index + 1}',
+            )
+
+        result = execute_tool(
+            self.admin,
+            'get_complaint',
+            {'complaint_id': self.complaint.id},
+        )
+
+        history = result['complaint']['status_history']
+        self.assertEqual(len(history), 10)
+        self.assertEqual(history[0]['changed_by'], 'Feature Admin')
+        self.assertEqual(history[0]['changed_by_role'], 'admin')
+        self.assertEqual(history[1]['changed_by'], 'Feature Help Desk')
+        self.assertEqual(history[1]['changed_by_role'], 'helpdesk')
+        self.assertTrue(history[0]['changed_at_ist'].endswith('IST'))
+        self.assertEqual(history[9]['remark'], 'Step 10')
 
     def test_engineer_cannot_use_operations_summary_tool(self):
         result = execute_tool(self.engineer, 'get_operations_summary', {})
@@ -158,6 +190,53 @@ class AssistantFeatureAPITest(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    @patch('apps.assistant.views.stream_chat_with_tools')
+    def test_chat_stream_emits_status_tokens_and_done(self, stream):
+        stream.return_value = iter(
+            [
+                {'type': 'status', 'key': 'ai.chat.status.thinking'},
+                {'type': 'token', 'text': 'Complaint '},
+                {'type': 'token', 'text': '#100001 is in progress.'},
+                {
+                    'type': 'done',
+                    'data': {
+                        'reply': 'Complaint #100001 is in progress.',
+                        'references': [
+                            {'id': self.complaint.id, 'label': '#100001'}
+                        ],
+                        'tools_used': ['get_complaint'],
+                        'tool_events': [],
+                        'language': 'en',
+                        **result_meta(),
+                    },
+                },
+            ]
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            reverse('assistant-chat-stream'),
+            {
+                'message': 'What is the status of 100001?',
+                'history': [],
+                'language': 'en',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'text/event-stream')
+        body = b''.join(response.streaming_content).decode()
+        self.assertIn('event: status', body)
+        self.assertIn('event: token', body)
+        self.assertIn('"text": "Complaint "', body)
+        self.assertIn('event: done', body)
+        self.assertIn('"reply": "Complaint #100001 is in progress."', body)
+        self.assertEqual(
+            AIRequestLog.objects.filter(feature='chat', status='success').count(),
+            1,
+        )
 
     def test_chat_rejects_empty_message(self):
         self.client.force_authenticate(self.admin)

@@ -4,6 +4,7 @@ import re
 
 from django.conf import settings
 from django.core.cache import cache
+from django.http import StreamingHttpResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -33,6 +34,7 @@ from .services import (
     BriefingUpstreamError,
     build_briefing_context,
     chat_with_tools,
+    stream_chat_with_tools,
     generate_briefing,
     generate_complaint_copilot,
     generate_engineer_plan,
@@ -83,6 +85,25 @@ def _ai_failure_response(exc):
     return error_response(
         'The AI request could not be completed. Please try again.',
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+def _ai_failure_message(exc):
+    if isinstance(exc, BriefingConfigurationError):
+        return 'AI is not configured on this server.'
+    if isinstance(exc, BriefingInputError):
+        return str(exc)
+    if isinstance(exc, BriefingUpstreamError):
+        logger.warning('[AI] Upstream failure: %s', exc)
+        return str(exc)
+    logger.exception('[AI] Unexpected failure')
+    return 'The AI request could not be completed. Please try again.'
+
+
+def _sse_event(event):
+    return (
+        f"event: {event['type']}\n"
+        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     )
 
 
@@ -214,6 +235,91 @@ class ChatView(APIView):
             return _ai_failure_response(exc)
         finally:
             cache.delete(lock_key)
+
+
+class ChatStreamView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
+        serializer = ChatRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                'Please check the chat message.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        lock_key = f'ai-chat-lock:{request.user.id}'
+        if not cache.add(lock_key, True, timeout=180):
+            return error_response(
+                'The assistant is already answering. Please wait a moment.',
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        message = serializer.validated_data['message']
+        history = serializer.validated_data.get('history', [])
+        language = serializer.validated_data.get('language', 'en')
+
+        def event_stream():
+            result = None
+            try:
+                for event in stream_chat_with_tools(
+                    request.user,
+                    message,
+                    history,
+                    language,
+                ):
+                    if event.get('type') == 'done':
+                        result = event.get('data')
+                    yield _sse_event(event)
+                if result is not None:
+                    log_ai_request(
+                        user=request.user,
+                        feature='chat',
+                        status='success',
+                        request_text=message,
+                        response_text=result.get('reply', ''),
+                        result=result,
+                        metadata={
+                            'history': history,
+                            'tools_used': result.get('tools_used', []),
+                            'tool_events': result.get('tool_events', []),
+                            'references': result.get('references', []),
+                            'streamed': True,
+                        },
+                    )
+                    logger.info(
+                        '[AI CHAT STREAM] user=%s tools=%s cost=%s tokens=%s latency_ms=%s',
+                        request.user.id,
+                        ','.join(result.get('tools_used') or []) or 'none',
+                        (result.get('usage') or {}).get('cost'),
+                        (result.get('usage') or {}).get('total_tokens'),
+                        result.get('latency_ms'),
+                    )
+            except Exception as exc:
+                log_ai_request(
+                    user=request.user,
+                    feature='chat',
+                    status='error',
+                    request_text=message,
+                    error_message=str(exc),
+                    metadata={'history': history, 'streamed': True},
+                )
+                yield _sse_event(
+                    {'type': 'error', 'message': _ai_failure_message(exc)}
+                )
+            finally:
+                cache.delete(lock_key)
+
+        response = StreamingHttpResponse(
+            event_stream(),
+            content_type='text/event-stream',
+        )
+        response['Cache-Control'] = 'no-cache, no-transform'
+        response['X-Accel-Buffering'] = 'no'
+        return response
 
 
 class ComplaintCopilotView(APIView):

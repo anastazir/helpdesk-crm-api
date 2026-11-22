@@ -79,10 +79,24 @@ send anything. Do not reveal caller phone numbers, Aadhaar numbers, addresses,
 BMIDs, or other caller identity. Those details are available in the complaint UI
 to authorized users.
 
+Staff identities are internal operational data, not caller PII. You may share
+the names and roles of staff in created_by, changed_by, assigned_engineer,
+assignments[].assigned_by, assignments[].unassigned_by, and
+job_note_created_by when asked. Do not refuse a staff-identity question when the
+tool result contains the name.
+
 If a tool reports a permission error, explain it briefly. If data is missing,
 say so. Cite complaint IDs returned by tools. Answer in {language_name} with a
 short summary and, when useful, a few bullet points. Use plain text only. Do not
 use Markdown syntax, asterisks, hash headings, tables, code blocks, or HTML.
+
+When asked about status flow, audit history, or who changed a complaint, call
+get_complaint and list every entry in status_history in chronological order.
+Include the previous status, new status, changed_at_ist timestamp, changed_by
+name, changed_by_role, and remark when present. Do not omit status events. If a
+changed_by value is null, say System. When asked who created or assigned a
+complaint, use created_by and assignments; do not describe staff names as
+caller PII.
 """.strip()
 
 COPILOT_PROMPTS = {
@@ -463,13 +477,8 @@ def generate_briefing(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def chat_with_tools(user, message, history, language='en'):
-    from .tools import (
-        ANALYTICS_TOOL_SCHEMA,
-        TOOL_SCHEMAS,
-        execute_tool,
-        extract_references,
-    )
+def _chat_request(user, message, history, language):
+    from .tools import ANALYTICS_TOOL_SCHEMA, TOOL_SCHEMAS
 
     if not message or not message.strip():
         raise BriefingInputError('Ask a question first.')
@@ -502,7 +511,46 @@ def chat_with_tools(user, message, history, language='en'):
         if role in ('user', 'assistant') and content:
             messages.append({'role': role, 'content': content[:2000]})
     messages.append({'role': 'user', 'content': message.strip()[:2000]})
+    return messages, tools
 
+
+def _unique_references(references):
+    unique = []
+    seen = set()
+    for reference in references:
+        if reference['id'] in seen:
+            continue
+        seen.add(reference['id'])
+        unique.append(reference)
+    return unique
+
+
+def _tool_status_event(name, arguments):
+    if name == 'get_complaint':
+        return {
+            'type': 'status',
+            'key': 'ai.chat.status.complaint',
+            'params': {'id': arguments.get('complaint_id') or ''},
+        }
+    if name == 'search_complaints':
+        return {'type': 'status', 'key': 'ai.chat.status.search'}
+    if name == 'run_analytics_query':
+        return {'type': 'status', 'key': 'ai.chat.status.analytics'}
+    if name == 'get_operations_summary':
+        return {'type': 'status', 'key': 'ai.chat.status.summary'}
+    if name == 'get_engineer_workload':
+        return {'type': 'status', 'key': 'ai.chat.status.workload'}
+    if name == 'get_sla_risks':
+        return {'type': 'status', 'key': 'ai.chat.status.sla'}
+    if name == 'get_parts_queue':
+        return {'type': 'status', 'key': 'ai.chat.status.parts'}
+    return {'type': 'status', 'key': 'ai.chat.status.data'}
+
+
+def chat_with_tools(user, message, history, language='en'):
+    from .tools import execute_tool, extract_references
+
+    messages, tools = _chat_request(user, message, history, language)
     usage_total = {
         'prompt_tokens': 0,
         'completion_tokens': 0,
@@ -577,17 +625,9 @@ def chat_with_tools(user, message, history, language='en'):
                 'The assistant returned an empty answer. Please rephrase.'
             )
 
-        unique_references = []
-        seen = set()
-        for reference in references:
-            if reference['id'] in seen:
-                continue
-            seen.add(reference['id'])
-            unique_references.append(reference)
-
         return {
             'reply': content,
-            'references': unique_references,
+            'references': _unique_references(references),
             'tools_used': list(dict.fromkeys(tool_names)),
             'tool_events': tool_events,
             'language': language,
@@ -602,6 +642,220 @@ def chat_with_tools(user, message, history, language='en'):
         'The assistant could not finish that request. Please try a narrower question.'
     )
 
+
+def stream_chat_with_tools(user, message, history, language='en'):
+    from .tools import execute_tool, extract_references
+
+    if not settings.OPENROUTER_API_KEY:
+        raise BriefingConfigurationError(
+            'AI chat is not configured on this server.'
+        )
+
+    messages, tools = _chat_request(user, message, history, language)
+    usage_total = {
+        'prompt_tokens': 0,
+        'completion_tokens': 0,
+        'total_tokens': 0,
+        'cost': None,
+    }
+    tool_names = []
+    tool_events = []
+    tool_call_count = 0
+    references = []
+    last_data = None
+    started = time.monotonic()
+    headers = {
+        'Authorization': f'Bearer {settings.OPENROUTER_API_KEY}',
+        'Content-Type': 'application/json',
+        'X-Title': 'Help Desk CRM',
+    }
+    url = f'{settings.OPENROUTER_BASE_URL.rstrip("/")}/chat/completions'
+
+    yield {'type': 'status', 'key': 'ai.chat.status.thinking'}
+
+    for _ in range(4):
+        payload = _completion_payload(
+            messages,
+            settings.AI_CHAT_MAX_TOKENS,
+            tools=tools,
+            reasoning_effort=settings.AI_CHAT_REASONING_EFFORT,
+        )
+        payload['stream'] = True
+        payload['stream_options'] = {'include_usage': True}
+        content_parts = []
+        round_tool_calls = {}
+        round_usage = {}
+        round_model = None
+        round_provider = None
+        streamed_content = False
+        content_started = False
+        pending_prefix = []
+
+        try:
+            with httpx.Client(timeout=settings.OPENROUTER_TIMEOUT) as client:
+                with client.stream(
+                    'POST',
+                    url,
+                    headers=headers,
+                    json=payload,
+                ) as response:
+                    if not response.is_success:
+                        logger.warning(
+                            '[AI] OpenRouter streaming returned HTTP %s for AI chat',
+                            response.status_code,
+                        )
+                        raise BriefingUpstreamError(
+                            'The AI service rejected the request. Please try again.'
+                        )
+                    for line in response.iter_lines():
+                        if isinstance(line, bytes):
+                            line = line.decode('utf-8', 'replace')
+                        if not line or not line.startswith('data:'):
+                            continue
+                        raw = line[5:].strip()
+                        if raw == '[DONE]':
+                            break
+                        try:
+                            chunk = json.loads(raw)
+                        except (TypeError, ValueError):
+                            continue
+                        if chunk.get('model'):
+                            round_model = chunk['model']
+                        if chunk.get('provider'):
+                            round_provider = chunk['provider']
+                        if chunk.get('usage'):
+                            round_usage = chunk['usage']
+                        for choice in chunk.get('choices') or []:
+                            delta = choice.get('delta') or {}
+                            text = delta.get('content')
+                            if text:
+                                text = str(text)
+                                content_parts.append(text)
+                                if not content_started:
+                                    pending_prefix.append(text)
+                                    if text.strip():
+                                        content_started = True
+                                        for prefix in pending_prefix:
+                                            yield {'type': 'token', 'text': prefix}
+                                        pending_prefix = []
+                                        streamed_content = True
+                                else:
+                                    streamed_content = True
+                                    yield {'type': 'token', 'text': text}
+                            for tool_call in delta.get('tool_calls') or []:
+                                index = tool_call.get('index')
+                                if index is None:
+                                    index = len(round_tool_calls)
+                                state = round_tool_calls.setdefault(
+                                    index,
+                                    {
+                                        'id': '',
+                                        'type': 'function',
+                                        'function': {'name': '', 'arguments': ''},
+                                    },
+                                )
+                                if tool_call.get('id'):
+                                    state['id'] += tool_call['id']
+                                function = tool_call.get('function') or {}
+                                if function.get('name'):
+                                    state['function']['name'] += function['name']
+                                if function.get('arguments'):
+                                    state['function']['arguments'] += function[
+                                        'arguments'
+                                    ]
+        except BriefingUpstreamError:
+            raise
+        except httpx.HTTPError as exc:
+            logger.warning('[AI] OpenRouter streaming request failed: %s', exc)
+            raise BriefingUpstreamError(
+                'The AI service is currently unavailable. Please try again.'
+            ) from exc
+
+        data = {
+            'model': round_model or settings.OPENROUTER_MODEL,
+            'provider': round_provider,
+            'usage': round_usage,
+        }
+        last_data = data
+        _add_usage(usage_total, _usage_from(data))
+        content = ''.join(content_parts)
+        tool_calls = [
+            round_tool_calls[index]
+            for index in sorted(round_tool_calls)
+        ]
+
+        if tool_calls:
+            if streamed_content:
+                yield {'type': 'reset'}
+            messages.append(
+                {
+                    'role': 'assistant',
+                    'content': content,
+                    'tool_calls': tool_calls,
+                }
+            )
+            for index, call in enumerate(tool_calls[:6]):
+                if tool_call_count >= 8:
+                    break
+                function = call.get('function') or {}
+                name = function.get('name') or ''
+                raw_arguments = function.get('arguments') or '{}'
+                try:
+                    arguments = json.loads(raw_arguments)
+                except (TypeError, ValueError):
+                    arguments = {}
+                yield _tool_status_event(name, arguments)
+                result = execute_tool(user, name, arguments)
+                tool_call_count += 1
+                tool_names.append(name)
+                tool_events.append(
+                    {
+                        'name': name,
+                        'arguments': arguments,
+                        'ok': 'error' not in result,
+                    }
+                )
+                references.extend(extract_references(name, result))
+                encoded = json.dumps(result, ensure_ascii=False)
+                if len(encoded) > 12000:
+                    encoded = encoded[:12000] + '...truncated'
+                messages.append(
+                    {
+                        'role': 'tool',
+                        'tool_call_id': call.get('id')
+                        or f'call_{index}',
+                        'content': encoded,
+                    }
+                )
+            yield {'type': 'status', 'key': 'ai.chat.status.review'}
+            continue
+
+        content = content.strip()
+        if not content:
+            raise BriefingUpstreamError(
+                'The assistant returned an empty answer. Please rephrase.'
+            )
+
+        yield {
+            'type': 'done',
+            'data': {
+                'reply': content,
+                'references': _unique_references(references),
+                'tools_used': list(dict.fromkeys(tool_names)),
+                'tool_events': tool_events,
+                'language': language,
+                **_result_meta(
+                    last_data,
+                    int((time.monotonic() - started) * 1000),
+                    usage=usage_total,
+                ),
+            },
+        }
+        return
+
+    raise BriefingUpstreamError(
+        'The assistant could not finish that request. Please try a narrower question.'
+    )
 
 def generate_complaint_copilot(
     context,

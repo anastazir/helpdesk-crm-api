@@ -1,5 +1,5 @@
 import logging
-from datetime import timedelta
+from datetime import timedelta, timezone as datetime_timezone
 
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -7,6 +7,7 @@ from django.utils import timezone
 from apps.complaints.models import Complaint, ComplaintAssignment
 
 logger = logging.getLogger('apps.assistant')
+IST = datetime_timezone(timedelta(hours=5, minutes=30))
 
 STATUS_NAMES = [
     'open',
@@ -68,12 +69,76 @@ def status_label(status):
 
 def build_complaint_context(complaint):
     assignment = complaint.get_current_assignment()
-    history = complaint.status_history.select_related('changed_by').order_by(
-        '-changed_at'
-    )[:8]
+    history = list(
+        complaint.status_history.select_related('changed_by').order_by(
+            'changed_at', 'id'
+        )[:200]
+    )
+    assignments = list(
+        complaint.assignments.select_related(
+            'engineer', 'assigned_by', 'unassigned_by'
+        ).order_by('assigned_at', 'id')[:100]
+    )
     uploads = list(complaint.uploads.values_list('file_type', flat=True))
     now = timezone.now()
+    created_at_ist = complaint.created_at.astimezone(IST)
 
+    def profile(user):
+        return (
+            {'name': user.full_name, 'role': user.role}
+            if user
+            else None
+        )
+
+    def history_entry(entry):
+        changed_at_ist = entry.changed_at.astimezone(IST)
+        changed_by = entry.changed_by
+        return {
+            'previous_status': entry.previous_status,
+            'previous_status_label': (
+                status_label(entry.previous_status)
+                if entry.previous_status
+                else None
+            ),
+            'status': entry.new_status,
+            'status_label': status_label(entry.new_status),
+            'changed_at': entry.changed_at.isoformat(),
+            'changed_at_ist': changed_at_ist.strftime(
+                '%d %b %Y, %I:%M %p IST'
+            ),
+            'changed_by': changed_by.full_name if changed_by else None,
+            'changed_by_role': changed_by.role if changed_by else None,
+            'remark': entry.remark,
+        }
+
+    def assignment_entry(entry):
+        assigned_at_ist = entry.assigned_at.astimezone(IST)
+        unassigned_at_ist = (
+            entry.unassigned_at.astimezone(IST)
+            if entry.unassigned_at
+            else None
+        )
+        return {
+            'engineer': profile(entry.engineer),
+            'assigned_at': entry.assigned_at.isoformat(),
+            'assigned_at_ist': assigned_at_ist.strftime(
+                '%d %b %Y, %I:%M %p IST'
+            ),
+            'assigned_by': profile(entry.assigned_by),
+            'unassigned_at': (
+                entry.unassigned_at.isoformat()
+                if entry.unassigned_at
+                else None
+            ),
+            'unassigned_at_ist': (
+                unassigned_at_ist.strftime('%d %b %Y, %I:%M %p IST')
+                if unassigned_at_ist
+                else None
+            ),
+            'unassigned_by': profile(entry.unassigned_by),
+        }
+
+    job_note = getattr(complaint, 'job_note', None)
     return {
         'id': complaint.id,
         'status': complaint.status,
@@ -84,6 +149,8 @@ def build_complaint_context(complaint):
         'department': complaint.department,
         'designation': complaint.designation,
         'created_at': complaint.created_at.isoformat(),
+        'created_at_ist': created_at_ist.strftime('%d %b %Y, %I:%M %p IST'),
+        'created_by': profile(complaint.created_by),
         'age_hours': round(
             (now - complaint.created_at).total_seconds() / 3600,
             1,
@@ -93,31 +160,26 @@ def build_complaint_context(complaint):
             1,
         ),
         'assigned_engineer': (
-            assignment.engineer.full_name if assignment else None
+            profile(assignment.engineer) if assignment else None
         ),
-        'job_note': (
-            complaint.job_note.text
-            if hasattr(complaint, 'job_note')
-            else None
-        ),
+        'job_note': job_note.text if job_note else None,
+        'job_note_created_by': profile(job_note.created_by) if job_note else None,
         'uploads_count': len(uploads),
         'upload_types': sorted(set(uploads)),
         'comments_count': complaint.comments.count(),
         'assignment_count': complaint.assignments.count(),
+        'assignments': [assignment_entry(entry) for entry in assignments],
+        'status_history_count': len(history),
+        'status_history': [history_entry(entry) for entry in history],
         'recent_status_history': [
-            {
-                'status': entry.new_status,
-                'status_label': status_label(entry.new_status),
-                'changed_at': entry.changed_at.isoformat(),
-                'remark': entry.remark,
-            }
-            for entry in history
+            history_entry(entry) for entry in reversed(history[-8:])
         ],
     }
 
 
 def complaint_summary(user, complaint):
     assignment = complaint.get_current_assignment()
+    created_by = complaint.created_by
     return {
         'id': complaint.id,
         'status': complaint.status,
@@ -128,6 +190,11 @@ def complaint_summary(user, complaint):
         'age_days': max(
             0,
             int((timezone.now() - complaint.created_at).total_seconds() // 86400),
+        ),
+        'created_by': (
+            {'name': created_by.full_name, 'role': created_by.role}
+            if created_by
+            else None
         ),
         'assigned_engineer': (
             assignment.engineer.full_name if assignment else None
@@ -172,9 +239,9 @@ def _parse_statuses(value):
 
 
 def search_complaints(user, args):
-    queryset = scoped_complaints(user).select_related('zone').prefetch_related(
-        'issues'
-    )
+    queryset = scoped_complaints(user).select_related(
+        'zone', 'created_by'
+    ).prefetch_related('issues')
     query = str(args.get('query') or '').strip()
     statuses = _parse_statuses(args.get('statuses'))
     zone = str(args.get('zone') or '').strip()
@@ -241,7 +308,9 @@ def get_complaint(user, args):
     if complaint_id is None:
         raise ToolError('complaint_id is required.')
     try:
-        complaint = Complaint.objects.select_related('zone', 'job_note').prefetch_related(
+        complaint = Complaint.objects.select_related(
+            'zone', 'job_note', 'job_note__created_by', 'created_by'
+        ).prefetch_related(
             'issues',
             'uploads',
             'status_history',
@@ -500,9 +569,11 @@ TOOL_SCHEMAS = [
         'function': {
             'name': 'get_complaint',
             'description': (
-                'Get non-PII detail for one visible complaint: status, '
-                'issues, age, assignment, job note, upload count, comment '
-                'count, and recent status history.'
+                'Get non-PII detail for one visible complaint: creator, status, '
+                'issues, age, current assignment, assignment history, job '
+                'note, upload count, comment count, and the full status '
+                'history with timestamps and the staff member who changed '
+                'each status.'
             ),
             'parameters': {
                 'type': 'object',

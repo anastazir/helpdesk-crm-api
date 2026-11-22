@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     AnalyticsView,
     AssistantSettingsView,
+    ChatStreamView,
     ChatView,
     ComplaintAutofillView,
     ComplaintCopilotView,
@@ -19,6 +20,7 @@ urlpatterns = [
     path('analytics/', AnalyticsView.as_view(), name='assistant-analytics'),
     path('geocode/', GeocodeView.as_view(), name='assistant-geocode'),
     path('chat/', ChatView.as_view(), name='assistant-chat'),
+    path('chat/stream/', ChatStreamView.as_view(), name='assistant-chat-stream'),
     path(
         'complaint-copilot/',
         ComplaintCopilotView.as_view(),
