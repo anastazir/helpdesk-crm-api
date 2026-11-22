@@ -172,3 +172,12 @@ LOGGING = {
     },
     'root': {'handlers': ['console'], 'level': 'WARNING'},
 }
+
+AI_CHAT_MAX_TOKENS = config('AI_CHAT_MAX_TOKENS', default=1200, cast=int)
+AI_CHAT_REASONING_EFFORT = config(
+    'AI_CHAT_REASONING_EFFORT',
+    default='none',
+)
+AI_COPILOT_MAX_TOKENS = config('AI_COPILOT_MAX_TOKENS', default=700, cast=int)
+AI_PLAN_MAX_TOKENS = config('AI_PLAN_MAX_TOKENS', default=700, cast=int)
+AI_TRIAGE_MAX_TOKENS = config('AI_TRIAGE_MAX_TOKENS', default=500, cast=int)
