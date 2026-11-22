@@ -181,6 +181,9 @@ def search_complaints(user, args):
     engineer = str(args.get('engineer') or '').strip()
     older_than_days = _parse_optional_int(args.get('older_than_days'))
     newer_than_days = _parse_optional_int(args.get('newer_than_days'))
+    created_within_hours = _parse_optional_int(
+        args.get('created_within_hours'), minimum=1, maximum=8760
+    )
     ordering = args.get('ordering') or 'newest'
     limit = _parse_limit(args.get('limit'), default=10, maximum=20)
 
@@ -210,6 +213,10 @@ def search_complaints(user, args):
     if newer_than_days is not None:
         queryset = queryset.filter(
             created_at__gte=timezone.now() - timedelta(days=newer_than_days)
+        )
+    if created_within_hours is not None:
+        queryset = queryset.filter(
+            created_at__gte=timezone.now() - timedelta(hours=created_within_hours)
         )
 
     if ordering == 'oldest':
@@ -317,6 +324,36 @@ def get_parts_queue(user, args):
     }
 
 
+def run_analytics_query(user, args):
+    if user.role != 'admin':
+        raise ToolPermissionError(
+            'SQL analytics is available to admins only.'
+        )
+    from .analytics import AnalyticsError, execute_analytics_sql
+
+    sql = args.get('sql')
+    if not isinstance(sql, str) or not sql.strip():
+        raise ToolError('SQL is required.')
+    try:
+        return execute_analytics_sql(sql, max_rows=100)
+    except AnalyticsError as exc:
+        from .analytics import analytics_dialect
+
+        dialect = analytics_dialect()
+        hint = (
+            "Use datetime('now', '-2 hours') or date('now', '-7 days') "
+            'and date(created_at); never use INTERVAL.'
+            if dialect == 'sqlite'
+            else "Use now() - interval '2 hours' or "
+            "current_date - interval '7 days'."
+        )
+        return {
+            'error': str(exc),
+            'dialect': dialect,
+            'hint': hint,
+        }
+
+
 def get_operations_summary(user, args):
     if user.role not in ('admin', 'helpdesk'):
         raise ToolPermissionError(
@@ -330,6 +367,7 @@ def get_operations_summary(user, args):
 def execute_tool(user, name, arguments):
     handlers = {
         'get_operations_summary': (get_operations_summary, True),
+        'run_analytics_query': (run_analytics_query, False),
         'search_complaints': (search_complaints, False),
         'get_complaint': (get_complaint, False),
         'get_engineer_workload': (get_engineer_workload, False),
@@ -440,6 +478,10 @@ TOOL_SCHEMAS = [
                     },
                     'older_than_days': {'type': 'integer'},
                     'newer_than_days': {'type': 'integer'},
+                    'created_within_hours': {
+                        'type': 'integer',
+                        'description': 'Only complaints created within this many hours.',
+                    },
                     'ordering': {
                         'type': 'string',
                         'enum': ['newest', 'oldest'],
@@ -521,3 +563,28 @@ TOOL_SCHEMAS = [
         },
     },
 ]
+
+
+ANALYTICS_TOOL_SCHEMA = {
+    'type': 'function',
+    'function': {
+        'name': 'run_analytics_query',
+        'description': (
+            'Run one read-only SELECT against the analytics views for a '
+            'flexible ad-hoc analysis. Admin only. Use analytics_complaints, '
+            'analytics_complaint_issues, analytics_status_events, and '
+            'analytics_assignments. Never use base tables or caller PII.'
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'sql': {
+                    'type': 'string',
+                    'description': 'Exactly one read-only SELECT query.',
+                },
+            },
+            'required': ['sql'],
+            'additionalProperties': False,
+        },
+    },
+}

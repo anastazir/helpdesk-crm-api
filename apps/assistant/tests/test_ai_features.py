@@ -5,6 +5,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from apps.assistant.analytics import AnalyticsValidationError, validate_analytics_sql
 from apps.assistant.models import AIRequestLog
 from apps.assistant.tools import execute_tool
 from apps.complaints.models import (
@@ -379,3 +380,123 @@ class AssistantFeatureAPITest(APITestCase):
         )
         self.assertEqual(detail.status_code, status.HTTP_200_OK)
         self.assertEqual(detail.data['data']['request_text'], 'What is at risk?')
+
+
+    def test_analytics_validator_blocks_writes_and_base_tables(self):
+        with self.assertRaises(AnalyticsValidationError):
+            validate_analytics_sql('DELETE FROM analytics_complaints')
+        with self.assertRaises(AnalyticsValidationError):
+            validate_analytics_sql('SELECT * FROM users')
+        with self.assertRaises(AnalyticsValidationError):
+            validate_analytics_sql('SELECT pg_sleep(10)')
+        with self.assertRaises(AnalyticsValidationError):
+            validate_analytics_sql('SELECT 1; SELECT 2')
+
+    def test_analytics_validator_allows_case_and_boolean_logic(self):
+        validated = validate_analytics_sql(
+            "SELECT CASE WHEN status = 'open' AND assigned_engineer IS NOT NULL "
+            "THEN 'assigned' ELSE status END AS state, COUNT(*) AS total "
+            'FROM analytics_complaints GROUP BY 1'
+        )
+        self.assertIn('CASE', validated['sql'])
+
+    def test_analytics_validator_allows_safe_views(self):
+        validated = validate_analytics_sql(
+            'SELECT status, COUNT(*) AS total '
+            'FROM analytics_complaints GROUP BY status'
+        )
+        self.assertIn('analytics_complaints', validated['sql'])
+        self.assertIn('LIMIT 1001', validated['wrapped_sql'])
+
+    def test_sql_tool_is_admin_only(self):
+        result = execute_tool(
+            self.engineer,
+            'run_analytics_query',
+            {'sql': 'SELECT COUNT(*) AS total FROM analytics_complaints'},
+        )
+        self.assertIn('error', result)
+
+    @patch('apps.assistant.views.generate_analytics_answer')
+    @patch('apps.assistant.views.generate_analytics_plan')
+    def test_admin_analytics_returns_chart_data(self, plan, answer):
+        plan.return_value = (
+            {
+                'sql': (
+                    'SELECT status, COUNT(*) AS total '
+                    'FROM analytics_complaints GROUP BY status'
+                ),
+                'title': 'Complaints by status',
+                'response_type': 'chart',
+                'chart': {
+                    'type': 'bar',
+                    'x': 'status',
+                    'y': 'total',
+                    'series': None,
+                },
+                'explanation': 'Counts by status.',
+            },
+            {
+                'model': 'deepseek/deepseek-v4.1-flash-1017',
+                'provider': 'Test Provider',
+                'usage': {
+                    'prompt_tokens': 100,
+                    'completion_tokens': 50,
+                    'total_tokens': 150,
+                    'cost': 0.0001,
+                },
+            },
+            500,
+        )
+        answer.return_value = (
+            'The largest group is assigned.',
+            {
+                'model': 'deepseek/deepseek-v4.1-flash-1017',
+                'provider': 'Test Provider',
+                'usage': {
+                    'prompt_tokens': 50,
+                    'completion_tokens': 20,
+                    'total_tokens': 70,
+                    'cost': 0.00005,
+                },
+            },
+            300,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            reverse('assistant-analytics'),
+            {'question': 'Complaints by status', 'language': 'en'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data['data']
+        self.assertEqual(data['chart']['type'], 'bar')
+        self.assertGreater(len(data['rows']), 0)
+        self.assertEqual(data['chart']['x'], 'status')
+        self.assertEqual(data['chart']['y'], 'total')
+        self.assertIn('answer', data)
+
+    @patch('apps.assistant.views.generate_analytics_plan')
+    def test_analytics_is_admin_only(self, plan):
+        plan.return_value = ({}, {}, 0)
+        self.client.force_authenticate(self.helpdesk)
+        response = self.client.post(
+            reverse('assistant-analytics'),
+            {'question': 'Complaints by status', 'language': 'en'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_search_tool_supports_hour_window(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        Complaint.objects.filter(pk=self.complaint.pk).update(
+            created_at=timezone.now() - timedelta(hours=3)
+        )
+        result = execute_tool(
+            self.engineer,
+            'search_complaints',
+            {'created_within_hours': 2},
+        )
+        self.assertEqual(result['count'], 0)

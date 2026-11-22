@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    AnalyticsView,
     ChatView,
     ComplaintAutofillView,
     ComplaintCopilotView,
@@ -12,6 +13,7 @@ from .views import (
 
 urlpatterns = [
     path('briefing/', DailyBriefingView.as_view(), name='assistant-briefing'),
+    path('analytics/', AnalyticsView.as_view(), name='assistant-analytics'),
     path('chat/', ChatView.as_view(), name='assistant-chat'),
     path(
         'complaint-copilot/',

@@ -11,6 +11,7 @@ class AIRequestLog(models.Model):
         ('triage', 'AI Triage'),
         ('export_summary', 'Export Summary'),
         ('complaint_autofill', 'Complaint Autofill'),
+        ('analytics', 'AI Analytics'),
     ]
     STATUS_CHOICES = [
         ('success', 'Success'),

@@ -400,6 +400,7 @@ def _simple_completion(
     max_tokens,
     response_format=None,
     operation='AI',
+    reasoning_effort='none',
 ):
     payload = _completion_payload(
         [
@@ -408,6 +409,7 @@ def _simple_completion(
         ],
         max_tokens,
         response_format=response_format,
+        reasoning_effort=reasoning_effort,
     )
     data, latency = _post_openrouter(payload, operation)
     return (
@@ -462,7 +464,12 @@ def generate_briefing(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def chat_with_tools(user, message, history, language='en'):
-    from .tools import TOOL_SCHEMAS, execute_tool, extract_references
+    from .tools import (
+        ANALYTICS_TOOL_SCHEMA,
+        TOOL_SCHEMAS,
+        execute_tool,
+        extract_references,
+    )
 
     if not message or not message.strip():
         raise BriefingInputError('Ask a question first.')
@@ -474,6 +481,20 @@ def chat_with_tools(user, message, history, language='en'):
         today=start.date().isoformat(),
         language_name=_language_name(language),
     )
+    tools = list(TOOL_SCHEMAS)
+    if user.role == 'admin':
+        from .analytics import analytics_schema_text
+
+        system += (
+            '\n\nYou also have run_analytics_query for flexible read-only SQL. '
+            'Use it for ad-hoc analysis. Follow the exact SQL dialect. '
+            'SQLite time examples: datetime(\'now\', \'-2 hours\'), '
+            'date(\'now\', \'-7 days\'), date(created_at). '
+            'Never use INTERVAL in SQLite. PostgreSQL time examples: '
+            "now() - interval '2 hours', current_date - interval '7 days'.\n"
+            + analytics_schema_text()
+        )
+        tools.append(ANALYTICS_TOOL_SCHEMA)
     messages = [{'role': 'system', 'content': system}]
     for item in (history or [])[-10:]:
         role = item.get('role')
@@ -489,6 +510,7 @@ def chat_with_tools(user, message, history, language='en'):
         'cost': None,
     }
     tool_names = []
+    tool_events = []
     tool_call_count = 0
     references = []
     last_data = None
@@ -498,7 +520,7 @@ def chat_with_tools(user, message, history, language='en'):
         payload = _completion_payload(
             messages,
             settings.AI_CHAT_MAX_TOKENS,
-            tools=TOOL_SCHEMAS,
+            tools=tools,
             reasoning_effort=settings.AI_CHAT_REASONING_EFFORT,
         )
         data, latency = _post_openrouter(payload, 'AI chat')
@@ -528,6 +550,13 @@ def chat_with_tools(user, message, history, language='en'):
                 result = execute_tool(user, name, arguments)
                 tool_call_count += 1
                 tool_names.append(name)
+                tool_events.append(
+                    {
+                        'name': name,
+                        'arguments': arguments,
+                        'ok': 'error' not in result,
+                    }
+                )
                 references.extend(extract_references(name, result))
                 encoded = json.dumps(result, ensure_ascii=False)
                 if len(encoded) > 12000:
@@ -560,6 +589,7 @@ def chat_with_tools(user, message, history, language='en'):
             'reply': content,
             'references': unique_references,
             'tools_used': list(dict.fromkeys(tool_names)),
+            'tool_events': tool_events,
             'language': language,
             **_result_meta(
                 last_data,
@@ -798,3 +828,155 @@ def generate_complaint_autofill(
         'language': language,
         **_result_meta(data, latency),
     }
+
+
+ANALYTICS_SYSTEM_PROMPT = """
+You are the read-only analytics SQL generator for an internal help desk CRM.
+Use only the analytics views supplied by the system. Return exactly one SELECT
+statement. Never generate writes, DDL, multiple statements, system tables, or
+caller PII. Use the required dialect.
+
+Use the current server time supplied in the request for relative ranges.
+Complaint timestamps are stored in UTC; reporting uses Asia/Kolkata.
+
+For SQLite, use date/time functions only:
+- datetime('now', '-2 hours')
+- date('now', '-7 days')
+- date(created_at)
+Do not use PostgreSQL INTERVAL syntax in SQLite.
+
+For PostgreSQL, use:
+- now() - interval '2 hours'
+- current_date - interval '7 days'
+- (created_at AT TIME ZONE 'Asia/Kolkata')::date
+
+Use response_type table only when the user explicitly asks for a list, rows,
+complaint IDs, or details. For 'by zone', 'by status', 'compare', 'distribution',
+trend, or other analytical questions, choose a chart even if the result has only
+a few rows: line for time trends, bar for comparisons, donut for distributions,
+kpi for one number. The chart x and y must be exact column aliases from the SQL. The chart x and y must be exact
+column aliases from the SQL. Keep result sets bounded; do not select caller
+identity, Aadhaar, address, BMID, phone, or serial numbers. Use aliases that are
+short and readable. Return JSON matching the schema.
+""".strip()
+
+ANALYTICS_PLAN_SCHEMA = {
+    'name': 'analytics_plan',
+    'strict': True,
+    'schema': {
+        'type': 'object',
+        'properties': {
+            'sql': {'type': 'string'},
+            'title': {'type': 'string'},
+            'response_type': {
+                'type': 'string',
+                'enum': ['table', 'chart'],
+            },
+            'chart': {
+                'type': 'object',
+                'properties': {
+                    'type': {
+                        'type': 'string',
+                        'enum': ['table', 'bar', 'line', 'area', 'donut', 'kpi'],
+                    },
+                    'x': {'type': ['string', 'null']},
+                    'y': {'type': ['string', 'null']},
+                    'series': {'type': ['string', 'null']},
+                },
+                'required': ['type', 'x', 'y', 'series'],
+                'additionalProperties': False,
+            },
+            'explanation': {'type': 'string'},
+        },
+        'required': [
+            'sql',
+            'title',
+            'response_type',
+            'chart',
+            'explanation',
+        ],
+        'additionalProperties': False,
+    },
+}
+
+
+def generate_analytics_plan(
+    question,
+    language='en',
+    previous_sql=None,
+    sql_error=None,
+):
+    from .analytics import analytics_dialect, analytics_schema_text
+
+    system = (
+        f'{ANALYTICS_SYSTEM_PROMPT}\n\n{analytics_schema_text()}\n\n'
+        f'SQL dialect: {analytics_dialect()}.'
+    )
+    payload = {
+        'question': question,
+        'language': _language_name(language),
+        'current_time': _day_bounds()[0].isoformat(),
+        'dialect': analytics_dialect(),
+    }
+    if previous_sql and sql_error:
+        payload['previous_sql'] = previous_sql
+        payload['sql_error'] = sql_error
+        payload['instruction'] = (
+            'Repair the previous SQL using the error. Return a new plan.'
+        )
+    try:
+        content, data, latency = _simple_completion(
+            system,
+            json.dumps(payload, ensure_ascii=False),
+            settings.AI_ANALYTICS_MAX_TOKENS,
+            response_format={
+                'type': 'json_schema',
+                'json_schema': ANALYTICS_PLAN_SCHEMA,
+            },
+            operation='AI analytics plan',
+            reasoning_effort=settings.AI_ANALYTICS_REASONING_EFFORT,
+        )
+    except BriefingUpstreamError:
+        content, data, latency = _simple_completion(
+            system,
+            json.dumps(payload, ensure_ascii=False),
+            settings.AI_ANALYTICS_MAX_TOKENS,
+            response_format={
+                'type': 'json_schema',
+                'json_schema': ANALYTICS_PLAN_SCHEMA,
+            },
+            operation='AI analytics plan retry',
+            reasoning_effort='none',
+        )
+    try:
+        plan = json.loads(content)
+    except ValueError as exc:
+        raise BriefingUpstreamError(
+            'The analytics planner returned invalid JSON.'
+        ) from exc
+    return plan, data, latency
+
+
+def generate_analytics_answer(question, plan, result, language='en'):
+    system = (
+        'You are a read-only analytics assistant. Use only the supplied SQL '
+        'result. Do not invent numbers or rows. Answer in plain text with a '
+        'short takeaway and, if useful, 2-4 bullet observations. Do not include '
+        'caller identity or any PII. No Markdown tables, code blocks, asterisks, '
+        f'or hash headings. Answer in {_language_name(language)}.'
+    )
+    payload = {
+        'question': question,
+        'title': plan.get('title'),
+        'columns': result.get('columns', []),
+        'rows': result.get('rows', [])[:20],
+        'row_count': result.get('row_count', 0),
+        'truncated': result.get('truncated', False),
+    }
+    content, data, latency = _simple_completion(
+        system,
+        json.dumps(payload, ensure_ascii=False),
+        settings.AI_COPILOT_MAX_TOKENS,
+        operation='AI analytics answer',
+    )
+    return content, data, latency

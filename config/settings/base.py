@@ -183,3 +183,22 @@ AI_PLAN_MAX_TOKENS = config('AI_PLAN_MAX_TOKENS', default=700, cast=int)
 AI_TRIAGE_MAX_TOKENS = config('AI_TRIAGE_MAX_TOKENS', default=500, cast=int)
 
 USD_TO_INR_RATE = config('USD_TO_INR_RATE', default=88.0, cast=float)
+
+
+ANALYTICS_ENABLED = config('ANALYTICS_ENABLED', default=True, cast=bool)
+ANALYTICS_DATABASE_URL = config('ANALYTICS_DATABASE_URL', default='')
+ANALYTICS_QUERY_TIMEOUT_MS = config(
+    'ANALYTICS_QUERY_TIMEOUT_MS',
+    default=8000,
+    cast=int,
+)
+ANALYTICS_MAX_ROWS = config('ANALYTICS_MAX_ROWS', default=1000, cast=int)
+AI_ANALYTICS_MAX_TOKENS = config(
+    'AI_ANALYTICS_MAX_TOKENS',
+    default=1200,
+    cast=int,
+)
+AI_ANALYTICS_REASONING_EFFORT = config(
+    'AI_ANALYTICS_REASONING_EFFORT',
+    default='none',
+)

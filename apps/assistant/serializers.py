@@ -126,3 +126,12 @@ class ComplaintAutofillRequestSerializer(serializers.Serializer):
         required=False,
         default='en',
     )
+
+
+class AnalyticsRequestSerializer(serializers.Serializer):
+    question = serializers.CharField(max_length=500)
+    language = serializers.ChoiceField(
+        choices=['en', 'hi'],
+        required=False,
+        default='en',
+    )

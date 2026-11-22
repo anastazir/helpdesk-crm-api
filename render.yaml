@@ -35,6 +35,8 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: ANALYTICS_DATABASE_URL
+        sync: false
       - key: OPENROUTER_MODEL
         value: deepseek/deepseek-v4.1-flash-1017
       - key: AI_BRIEFING_ENABLED

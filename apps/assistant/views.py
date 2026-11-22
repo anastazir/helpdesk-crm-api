@@ -21,6 +21,7 @@ from .serializers import (
     TriageRequestSerializer,
     ExportSummaryRequestSerializer,
     ComplaintAutofillRequestSerializer,
+    AnalyticsRequestSerializer,
 )
 from .audit import log_ai_request
 from .services import (
@@ -35,6 +36,16 @@ from .services import (
     generate_triage,
     generate_export_summary,
     generate_complaint_autofill,
+    generate_analytics_plan,
+    generate_analytics_answer,
+    _usage_from,
+)
+from .analytics import (
+    AnalyticsConfigurationError,
+    AnalyticsError,
+    AnalyticsExecutionError,
+    AnalyticsValidationError,
+    execute_analytics_sql,
 )
 from .tools import (
     build_complaint_context,
@@ -163,6 +174,7 @@ class ChatView(APIView):
                 metadata={
                     'history': serializer.validated_data.get('history', []),
                     'tools_used': result.get('tools_used', []),
+                    'tool_events': result.get('tool_events', []),
                     'references': result.get('references', []),
                 },
             )
@@ -605,3 +617,280 @@ class ComplaintAutofillView(APIView):
                 error_message=str(exc),
             )
             return _ai_failure_response(exc)
+
+
+
+def _merge_usage(total, usage):
+    for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+        total[key] = total.get(key, 0) + (usage.get(key) or 0)
+    if usage.get('cost') is not None:
+        total['cost'] = (total.get('cost') or 0) + usage['cost']
+
+
+def _infer_analytics_chart(question, columns, rows):
+    lower = question.lower()
+    if any(
+        phrase in lower
+        for phrase in ('list ', 'show complaints', 'complaint ids', 'details', 'which complaints')
+    ):
+        return None
+    if not any(
+        phrase in lower
+        for phrase in (' by ', 'compare', 'trend', 'over time', 'distribution', 'breakdown', 'this week', 'last ')
+    ):
+        return None
+    numeric = [
+        column
+        for column in columns
+        if any(isinstance(row.get(column), (int, float)) for row in rows)
+    ]
+    categorical = [
+        column
+        for column in columns
+        if column not in numeric
+        and len({str(row.get(column)) for row in rows}) <= 20
+    ]
+    if not numeric or not categorical:
+        return None
+    x_field = categorical[0]
+    y_field = numeric[0]
+    if any(term in lower for term in ('trend', 'over time', 'daily', 'hourly', 'week', 'month', 'date')):
+        chart_type = 'line'
+    elif any(term in lower for term in ('distribution', 'status')):
+        chart_type = 'donut'
+    else:
+        chart_type = 'bar'
+    return {
+        'type': chart_type,
+        'x': x_field,
+        'y': y_field,
+        'series': None,
+    }
+
+
+def _analytics_result_meta(usage, latency, data):
+    cost = usage.get('cost')
+    usage['cost_inr'] = (
+        round(float(cost) * settings.USD_TO_INR_RATE, 4)
+        if cost is not None
+        else None
+    )
+    return {
+        'generated_at': timezone.now().isoformat(),
+        'model': (data or {}).get('model') or settings.OPENROUTER_MODEL,
+        'provider': (data or {}).get('provider'),
+        'usage': usage,
+        'latency_ms': latency,
+    }
+
+
+class AnalyticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role != 'admin':
+            return _role_forbidden('AI analytics is available to admins only.')
+        if not settings.ANALYTICS_ENABLED:
+            return error_response(
+                'AI analytics is disabled.',
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        serializer = AnalyticsRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                'Please check the analytics question.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
+            )
+        question = serializer.validated_data['question'].strip()
+        language = serializer.validated_data.get('language', 'en')
+
+        lock_key = f'ai-analytics-lock:{request.user.id}'
+        if not cache.add(lock_key, True, timeout=30):
+            return error_response(
+                'An analysis is already running. Please wait.',
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        usage = {
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'cost': None,
+        }
+        latency_total = 0
+        last_data = None
+        previous_sql = None
+        sql_error = None
+        result = None
+        plan = None
+        try:
+            for _ in range(2):
+                plan, plan_data, plan_latency = generate_analytics_plan(
+                    question,
+                    language,
+                    previous_sql=previous_sql,
+                    sql_error=sql_error,
+                )
+                last_data = plan_data
+                latency_total += plan_latency
+                _merge_usage(usage, _usage_from(plan_data))
+                try:
+                    result = execute_analytics_sql(plan['sql'])
+                    break
+                except (AnalyticsValidationError, AnalyticsExecutionError) as exc:
+                    previous_sql = plan.get('sql')
+                    sql_error = str(exc)
+
+            if result is None:
+                log_ai_request(
+                    user=request.user,
+                    feature='analytics',
+                    status='error',
+                    request_text=question,
+                    error_message=sql_error or 'Analytics query failed.',
+                    metadata={'previous_sql': previous_sql},
+                )
+                return error_response(
+                    'Could not produce a valid analytics query for that question.',
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
+            chart = plan.get('chart') or {}
+            columns = result.get('columns') or []
+            rows = result.get('rows') or []
+            chart_type = chart.get('type') or 'table'
+            response_type = plan.get('response_type') or 'table'
+            x_field = chart.get('x')
+            y_field = chart.get('y')
+            series_field = chart.get('series')
+            if series_field not in columns:
+                series_field = None
+            chart_is_valid = (
+                response_type == 'chart'
+                and chart_type in ('bar', 'line', 'area', 'donut', 'kpi')
+                and y_field in columns
+                and (chart_type == 'kpi' or x_field in columns)
+                and any(
+                    isinstance(row.get(y_field), (int, float))
+                    for row in rows
+                )
+            )
+            if not chart_is_valid:
+                inferred = _infer_analytics_chart(question, columns, rows)
+                if inferred:
+                    chart_type = inferred['type']
+                    x_field = inferred['x']
+                    y_field = inferred['y']
+                    series_field = inferred['series']
+                    response_type = 'chart'
+                    chart_is_valid = True
+
+            if result.get('row_count', 0) > 500 or not chart_is_valid:
+                chart_type = 'table'
+                response_type = 'table'
+                x_field = None
+                y_field = None
+                series_field = None
+
+            answer = ''
+            try:
+                answer, answer_data, answer_latency = generate_analytics_answer(
+                    question,
+                    plan,
+                    result,
+                    language,
+                )
+                last_data = answer_data
+                latency_total += answer_latency
+                _merge_usage(usage, _usage_from(answer_data))
+            except Exception as exc:
+                logger.warning('[AI ANALYTICS] Answer generation failed: %s', exc)
+
+            response_data = {
+                'question': question,
+                'sql': result['sql'],
+                'columns': columns,
+                'rows': rows,
+                'row_count': result['row_count'],
+                'truncated': result['truncated'],
+                'dialect': result['dialect'],
+                'title': plan.get('title') or 'AI analysis',
+                'response_type': response_type,
+                'chart': {
+                    'type': chart_type,
+                    'x': x_field if chart_type != 'table' else None,
+                    'y': y_field if chart_type != 'table' else None,
+                    'series': series_field if chart_type != 'table' else None,
+                },
+                'explanation': plan.get('explanation') or '',
+                'answer': answer or plan.get('explanation') or '',
+                **_analytics_result_meta(usage, latency_total, last_data),
+            }
+            log_ai_request(
+                user=request.user,
+                feature='analytics',
+                status='success',
+                request_text=question,
+                response_text=response_data['answer'],
+                result=response_data,
+                metadata={
+                    'sql': result['sql'],
+                    'chart': response_data['chart'],
+                    'row_count': result['row_count'],
+                    'truncated': result['truncated'],
+                },
+            )
+            logger.info(
+                '[AI ANALYTICS] user=%s rows=%s cost=%s tokens=%s',
+                request.user.id,
+                result['row_count'],
+                usage.get('cost'),
+                usage.get('total_tokens'),
+            )
+            return success_response(response_data)
+        except BriefingConfigurationError as exc:
+            log_ai_request(
+                user=request.user,
+                feature='analytics',
+                status='error',
+                request_text=question,
+                error_message=str(exc),
+            )
+            return _ai_failure_response(exc)
+        except AnalyticsConfigurationError as exc:
+            log_ai_request(
+                user=request.user,
+                feature='analytics',
+                status='error',
+                request_text=question,
+                error_message=str(exc),
+            )
+            return error_response(
+                str(exc),
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except AnalyticsError as exc:
+            log_ai_request(
+                user=request.user,
+                feature='analytics',
+                status='error',
+                request_text=question,
+                error_message=str(exc),
+            )
+            return error_response(
+                str(exc),
+                status_code=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='analytics',
+                status='error',
+                request_text=question,
+                error_message=str(exc),
+            )
+            return _ai_failure_response(exc)
+        finally:
+            cache.delete(lock_key)
