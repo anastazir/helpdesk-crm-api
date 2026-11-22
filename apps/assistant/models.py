@@ -12,6 +12,7 @@ class AIRequestLog(models.Model):
         ('export_summary', 'Export Summary'),
         ('complaint_autofill', 'Complaint Autofill'),
         ('analytics', 'AI Analytics'),
+        ('geocode', 'AI Address Geocoding'),
     ]
     STATUS_CHOICES = [
         ('success', 'Success'),
@@ -63,3 +64,51 @@ class AIRequestLog(models.Model):
 
     def __str__(self):
         return f'{self.feature} {self.status} at {self.created_at}'
+
+
+class GeocodeCache(models.Model):
+    query = models.TextField()
+    response = models.JSONField(default=list, blank=True)
+    provider = models.CharField(max_length=50, default='nominatim')
+    created_at = models.DateTimeField(auto_now_add=True)
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'geocode_cache'
+        ordering = ['-fetched_at']
+        indexes = [
+            models.Index(fields=['query']),
+            models.Index(fields=['fetched_at']),
+        ]
+
+    def __str__(self):
+        return self.query[:80]
+
+
+class AssistantSettings(models.Model):
+    ai_enabled = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'assistant_settings'
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f'AI enabled: {self.ai_enabled}'
+
+
+def ai_features_enabled():
+    if not settings.AI_FEATURES_ENABLED:
+        return False
+    return AssistantSettings.load().ai_enabled

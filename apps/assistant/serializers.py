@@ -135,3 +135,47 @@ class AnalyticsRequestSerializer(serializers.Serializer):
         required=False,
         default='en',
     )
+
+
+class GeocodeRequestSerializer(serializers.Serializer):
+    address = serializers.CharField(
+        max_length=1000,
+        required=False,
+        allow_blank=True,
+        default='',
+    )
+    address_remark = serializers.CharField(
+        max_length=500,
+        required=False,
+        allow_blank=True,
+        default='',
+    )
+    pincode = serializers.CharField(
+        max_length=10,
+        required=False,
+        allow_blank=True,
+        default='',
+    )
+    language = serializers.ChoiceField(
+        choices=['en', 'hi'],
+        required=False,
+        default='en',
+    )
+    use_ai = serializers.BooleanField(required=False, default=True)
+
+    def validate(self, attrs):
+        if not any(
+            [
+                (attrs.get('address') or '').strip(),
+                (attrs.get('address_remark') or '').strip(),
+                (attrs.get('pincode') or '').strip(),
+            ]
+        ):
+            raise serializers.ValidationError(
+                'Enter an address, address remark, or pincode.'
+            )
+        return attrs
+
+
+class AssistantSettingsSerializer(serializers.Serializer):
+    ai_enabled = serializers.BooleanField()

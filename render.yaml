@@ -37,6 +37,10 @@ services:
         sync: false
       - key: ANALYTICS_DATABASE_URL
         sync: false
+      - key: GEOCODE_USER_AGENT
+        sync: false
+      - key: GEOCODE_BASE_URL
+        value: https://nominatim.openstreetmap.org
       - key: OPENROUTER_MODEL
         value: deepseek/deepseek-v4.1-flash-1017
       - key: AI_BRIEFING_ENABLED

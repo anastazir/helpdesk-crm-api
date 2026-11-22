@@ -22,8 +22,11 @@ from .serializers import (
     ExportSummaryRequestSerializer,
     ComplaintAutofillRequestSerializer,
     AnalyticsRequestSerializer,
+    GeocodeRequestSerializer,
+    AssistantSettingsSerializer,
 )
 from .audit import log_ai_request
+from .models import AssistantSettings, ai_features_enabled
 from .services import (
     BriefingConfigurationError,
     BriefingInputError,
@@ -38,8 +41,10 @@ from .services import (
     generate_complaint_autofill,
     generate_analytics_plan,
     generate_analytics_answer,
+    generate_geocode_queries,
     _usage_from,
 )
+from .geocoding import GeocodeServiceError, geocode_location
 from .analytics import (
     AnalyticsConfigurationError,
     AnalyticsError,
@@ -81,6 +86,13 @@ def _ai_failure_response(exc):
     )
 
 
+def _ai_disabled_response():
+    return error_response(
+        'AI features are disabled by the administrator.',
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 class DailyBriefingView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -90,6 +102,8 @@ class DailyBriefingView(APIView):
                 'Only Admin and Help Desk users can generate the AI briefing.'
             )
 
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         if not settings.AI_BRIEFING_ENABLED:
             return error_response(
                 'AI briefing is disabled.',
@@ -142,6 +156,8 @@ class ChatView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         serializer = ChatRequestSerializer(data=request.data)
         if not serializer.is_valid():
             return error_response(
@@ -204,6 +220,8 @@ class ComplaintCopilotView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         serializer = CopilotRequestSerializer(data=request.data)
         if not serializer.is_valid():
             return error_response(
@@ -283,6 +301,8 @@ class EngineerPlanView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         if request.user.role != 'engineer':
             return _role_forbidden('The daily plan is available to engineers.')
 
@@ -340,6 +360,8 @@ class TriageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         if request.user.role not in ('admin', 'helpdesk'):
             return _role_forbidden(
                 'Only Admin and Help Desk users can use AI triage.'
@@ -428,6 +450,8 @@ class ExportSummaryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         if request.user.role != 'admin':
             return _role_forbidden('AI export summaries are available to admins only.')
 
@@ -535,6 +559,8 @@ class ComplaintAutofillView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         if request.user.role not in ('admin', 'helpdesk'):
             return _role_forbidden(
                 'Only Admin and Help Desk users can use complaint autofill.'
@@ -688,6 +714,8 @@ class AnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not ai_features_enabled():
+            return _ai_disabled_response()
         if request.user.role != 'admin':
             return _role_forbidden('AI analytics is available to admins only.')
         if not settings.ANALYTICS_ENABLED:
@@ -894,3 +922,158 @@ class AnalyticsView(APIView):
             return _ai_failure_response(exc)
         finally:
             cache.delete(lock_key)
+
+
+
+class GeocodeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role not in ('admin', 'helpdesk'):
+            return _role_forbidden(
+                'Address geocoding is available to Admin and Help Desk users.'
+            )
+
+        serializer = GeocodeRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                'Please check the address details.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
+            )
+        data = serializer.validated_data
+        address = data.get('address', '').strip()
+        address_remark = data.get('address_remark', '').strip()
+        pincode = data.get('pincode', '').strip()
+
+        lock_key = f'geocode-lock:{request.user.id}'
+        if not cache.add(lock_key, True, timeout=15):
+            return error_response(
+                'A location lookup is already in progress.',
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        ai_queries = []
+        ai_note = ''
+        ai_data = None
+        ai_latency = 0
+        ai_usage = None
+        use_ai = (
+            data.get('use_ai', True)
+            and settings.GEOCODE_AI_ENABLED
+            and bool(settings.OPENROUTER_API_KEY)
+            and ai_features_enabled()
+        )
+        try:
+            if use_ai:
+                try:
+                    plan, ai_data, ai_latency = generate_geocode_queries(
+                        address,
+                        address_remark,
+                        pincode,
+                        data.get('language', 'en'),
+                    )
+                    ai_queries = plan.get('queries') or []
+                    ai_note = plan.get('note') or ''
+                    ai_usage = _usage_from(ai_data)
+                    if ai_usage.get('cost') is not None:
+                        ai_usage['cost_inr'] = round(
+                            float(ai_usage['cost']) * settings.USD_TO_INR_RATE,
+                            4,
+                        )
+                except Exception as exc:
+                    logger.warning('[AI GEOCODE] Planner fallback: %s', exc)
+                    log_ai_request(
+                        user=request.user,
+                        feature='geocode',
+                        status='error',
+                        request_text=address or address_remark or pincode,
+                        error_message=str(exc),
+                    )
+
+            result = geocode_location(
+                address,
+                address_remark,
+                pincode,
+                ai_queries=ai_queries,
+            )
+            result['ai_assisted'] = bool(ai_queries)
+            result['ai_note'] = ai_note
+            result['ai_usage'] = ai_usage
+            if ai_queries:
+                log_ai_request(
+                    user=request.user,
+                    feature='geocode',
+                    status='success',
+                    request_text=address or address_remark or pincode,
+                    response_text=json.dumps(result, ensure_ascii=False),
+                    result={
+                        'model': (ai_data or {}).get('model') or settings.OPENROUTER_MODEL,
+                        'provider': (ai_data or {}).get('provider'),
+                        'usage': ai_usage or {},
+                        'latency_ms': ai_latency,
+                    },
+                    metadata={
+                        'queries': result.get('queries', []),
+                        'geocode_status': result.get('status'),
+                    },
+                )
+            return success_response(result)
+        except GeocodeServiceError as exc:
+            logger.warning('[GEOCODE] %s', exc)
+            return error_response(
+                str(exc),
+                status_code=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as exc:
+            log_ai_request(
+                user=request.user,
+                feature='geocode',
+                status='error',
+                request_text=address or address_remark or pincode,
+                error_message=str(exc),
+            )
+            return _ai_failure_response(exc)
+        finally:
+            cache.delete(lock_key)
+
+
+class AssistantSettingsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        row = AssistantSettings.load()
+        return success_response(
+            {
+                'ai_enabled': ai_features_enabled(),
+                'stored_ai_enabled': row.ai_enabled,
+                'can_manage': request.user.role == 'admin',
+            }
+        )
+
+    def patch(self, request):
+        if request.user.role != 'admin':
+            return _role_forbidden('Only admins can change AI settings.')
+        serializer = AssistantSettingsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                'Please check the AI setting.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
+            )
+        row = AssistantSettings.load()
+        row.ai_enabled = serializer.validated_data['ai_enabled']
+        row.updated_by = request.user
+        row.save(update_fields=['ai_enabled', 'updated_by', 'updated_at'])
+        logger.info(
+            '[AI SETTINGS] user=%s ai_enabled=%s',
+            request.user.id,
+            row.ai_enabled,
+        )
+        return success_response(
+            {
+                'ai_enabled': ai_features_enabled(),
+                'stored_ai_enabled': row.ai_enabled,
+                'can_manage': True,
+            }
+        )

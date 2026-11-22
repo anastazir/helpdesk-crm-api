@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 
+from apps.assistant.geocoding import GeocodeServiceError, geocode_location
 from apps.users.models import User
 from apps.users.serializers import UserMiniSerializer
 from core.pagination import StandardPagination
@@ -38,6 +39,7 @@ from .serializers import (
     EngineerLimitedComplaintSerializer,
     IssueTypeSerializer,
     JobNoteCreateSerializer,
+    ManualLocationSerializer,
     JobNoteSerializer,
     ReopenSerializer,
     StatusHistorySerializer,
@@ -212,6 +214,8 @@ class ComplaintViewSet(viewsets.GenericViewSet):
         data = dict(serializer.validated_data)
         issue_ids = data.pop('issue_ids')
         zone_id = data.pop('zone_id', None)
+        if data.get('latitude') is not None and data.get('longitude') is not None:
+            data['geocode_updated_at'] = timezone.now()
 
         complaint = Complaint.objects.create(
             zone_id=zone_id,
@@ -298,7 +302,23 @@ class ComplaintViewSet(viewsets.GenericViewSet):
         if not serializer.is_valid():
             return error_response('Validation failed.', serializer.errors)
 
+        address_changed = 'address' in request.data or 'pincode' in request.data
         serializer.save()
+        if address_changed:
+            complaint.latitude = None
+            complaint.longitude = None
+            complaint.geocode_status = 'not_geocoded'
+            complaint.geocode_label = ''
+            complaint.geocode_provider = ''
+            complaint.geocode_updated_at = None
+            complaint.map_radius_m = None
+            complaint.save(
+                update_fields=[
+                    'latitude', 'longitude', 'geocode_status',
+                    'geocode_label', 'geocode_provider',
+                    'geocode_updated_at', 'map_radius_m',
+                ]
+            )
         logger.info(f'[COMPLAINT] #{complaint.id} updated by {request.user.email}')
         return self._get_detail_response(complaint, message='Complaint updated.')
 
@@ -535,6 +555,78 @@ class ComplaintViewSet(viewsets.GenericViewSet):
         return self._get_detail_response(complaint, message='Complaint reopened.')
 
     @extend_schema(tags=['complaints'], responses={200: StatusHistorySerializer(many=True)})
+    @action(detail=True, methods=['post'])
+    def geocode(self, request, pk=None):
+        if request.user.role not in ('admin', 'helpdesk'):
+            return error_response(
+                'Only Admin and Help Desk users can locate complaints.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        complaint = self.get_object()
+        if not any(
+            (complaint.address, complaint.address_remark, complaint.pincode)
+        ):
+            return error_response(
+                'This complaint has no address, remark, or pincode to locate.'
+            )
+        try:
+            result = geocode_location(
+                complaint.address,
+                complaint.address_remark,
+                complaint.pincode,
+            )
+        except GeocodeServiceError as exc:
+            return error_response(
+                str(exc),
+                status_code=status.HTTP_502_BAD_GATEWAY,
+            )
+        complaint.geocode_status = result['status']
+        complaint.geocode_label = result['label']
+        complaint.geocode_provider = result['provider']
+        complaint.latitude = result['latitude']
+        complaint.longitude = result['longitude']
+        complaint.map_radius_m = result['map_radius_m']
+        complaint.geocode_updated_at = timezone.now()
+        complaint.save(
+            update_fields=[
+                'geocode_status', 'geocode_label', 'geocode_provider',
+                'latitude', 'longitude', 'map_radius_m', 'geocode_updated_at',
+            ]
+        )
+        return self._get_detail_response(
+            complaint,
+            message='Approximate location updated.',
+        )
+
+    @action(detail=True, methods=['post'], url_path='location')
+    def location(self, request, pk=None):
+        if request.user.role not in ('admin', 'helpdesk'):
+            return error_response(
+                'Only Admin and Help Desk users can pin complaint locations.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        complaint = self.get_object()
+        serializer = ManualLocationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response('Validation failed.', serializer.errors)
+        complaint.latitude = round(serializer.validated_data['latitude'], 6)
+        complaint.longitude = round(serializer.validated_data['longitude'], 6)
+        complaint.geocode_status = 'manual'
+        complaint.geocode_label = 'Pinned manually by Help Desk'
+        complaint.geocode_provider = 'manual'
+        complaint.map_radius_m = 50
+        complaint.geocode_updated_at = timezone.now()
+        complaint.save(
+            update_fields=[
+                'latitude', 'longitude', 'geocode_status', 'geocode_label',
+                'geocode_provider', 'map_radius_m', 'geocode_updated_at',
+            ]
+        )
+        return self._get_detail_response(
+            complaint,
+            message='Location pin saved.',
+        )
+
     @action(detail=True, methods=['get'])
     def history(self, request, pk=None):
         complaint = self.get_object()

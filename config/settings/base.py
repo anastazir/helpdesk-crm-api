@@ -202,3 +202,18 @@ AI_ANALYTICS_REASONING_EFFORT = config(
     'AI_ANALYTICS_REASONING_EFFORT',
     default='none',
 )
+
+
+GEOCODE_BASE_URL = config(
+    'GEOCODE_BASE_URL',
+    default='https://nominatim.openstreetmap.org',
+)
+GEOCODE_USER_AGENT = config(
+    'GEOCODE_USER_AGENT',
+    default='HelpDeskCRM/1.0 (+https://localhost)',
+)
+GEOCODE_TIMEOUT = config('GEOCODE_TIMEOUT', default=12, cast=int)
+GEOCODE_CACHE_DAYS = config('GEOCODE_CACHE_DAYS', default=30, cast=int)
+GEOCODE_AI_ENABLED = config('GEOCODE_AI_ENABLED', default=True, cast=bool)
+
+AI_FEATURES_ENABLED = config('AI_FEATURES_ENABLED', default=True, cast=bool)

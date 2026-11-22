@@ -2,18 +2,22 @@ from django.urls import path
 
 from .views import (
     AnalyticsView,
+    AssistantSettingsView,
     ChatView,
     ComplaintAutofillView,
     ComplaintCopilotView,
     DailyBriefingView,
     EngineerPlanView,
     ExportSummaryView,
+    GeocodeView,
     TriageView,
 )
 
 urlpatterns = [
+    path('settings/', AssistantSettingsView.as_view(), name='assistant-settings'),
     path('briefing/', DailyBriefingView.as_view(), name='assistant-briefing'),
     path('analytics/', AnalyticsView.as_view(), name='assistant-analytics'),
+    path('geocode/', GeocodeView.as_view(), name='assistant-geocode'),
     path('chat/', ChatView.as_view(), name='assistant-chat'),
     path(
         'complaint-copilot/',

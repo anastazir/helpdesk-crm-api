@@ -96,8 +96,11 @@ class ComplaintDetailSerializer(serializers.ModelSerializer):
         model = Complaint
         fields = [
             'id', 'caller_phone', 'caller_name', 'bmid', 'aadhaar', 'zone',
-            'department', 'designation', 'address', 'pincode', 'cpu_serial',
-            'monitor_serial', 'issues', 'others_description', 'status',
+            'department', 'designation', 'address', 'address_remark', 'pincode',
+            'cpu_serial', 'monitor_serial', 'issues', 'others_description',
+            'status', 'latitude', 'longitude', 'geocode_status',
+            'geocode_label', 'geocode_provider', 'geocode_updated_at',
+            'map_radius_m',
             'created_at', 'created_by', 'assigned_engineer', 'job_note',
             'time_open_seconds', 'time_in_status_seconds',
         ]
@@ -133,7 +136,28 @@ class ComplaintCreateSerializer(serializers.Serializer):
     department = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     designation = serializers.CharField(max_length=255, required=False, allow_blank=True, allow_null=True)
     address = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    address_remark = serializers.CharField(
+        max_length=500, required=False, allow_blank=True, allow_null=True
+    )
     pincode = serializers.CharField(max_length=10, required=False, allow_blank=True, allow_null=True)
+    latitude = serializers.DecimalField(
+        max_digits=9, decimal_places=6, required=False, allow_null=True
+    )
+    longitude = serializers.DecimalField(
+        max_digits=9, decimal_places=6, required=False, allow_null=True
+    )
+    geocode_status = serializers.ChoiceField(
+        choices=['not_geocoded', 'address', 'landmark', 'pincode', 'manual', 'not_found', 'failed'],
+        required=False,
+        default='not_geocoded',
+    )
+    geocode_label = serializers.CharField(
+        max_length=500, required=False, allow_blank=True, allow_null=True
+    )
+    geocode_provider = serializers.CharField(
+        max_length=50, required=False, allow_blank=True, allow_null=True
+    )
+    map_radius_m = serializers.IntegerField(required=False, allow_null=True)
     cpu_serial = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     monitor_serial = serializers.CharField(max_length=100, required=False, allow_blank=True, allow_null=True)
     issue_ids = serializers.ListField(
@@ -178,7 +202,7 @@ class ComplaintUpdateSerializer(serializers.ModelSerializer):
         model = Complaint
         fields = [
             'caller_name', 'caller_phone', 'department', 'designation',
-            'address', 'pincode', 'cpu_serial', 'monitor_serial',
+            'address', 'address_remark', 'pincode', 'cpu_serial', 'monitor_serial',
         ]
 
 
@@ -242,3 +266,8 @@ class UploadFileSerializer(serializers.ModelSerializer):
 
     def get_file_url(self, obj):
         return obj.file.url if obj.file else None
+
+
+class ManualLocationSerializer(serializers.Serializer):
+    latitude = serializers.FloatField(min_value=-90, max_value=90)
+    longitude = serializers.FloatField(min_value=-180, max_value=180)

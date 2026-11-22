@@ -19,13 +19,19 @@ from apps.zones.models import EngineerZoneAssignment, Zone
 
 logger = logging.getLogger('seed')
 
-ZONE_NAMES = [
-    'Zone North',
-    'Zone South',
-    'Zone Central',
-    'Zone East',
-    'Zone West',
-    'HQ',
+MCD_ZONE_NAMES = [
+    'Central Zone',
+    'City-SP Zone',
+    'Civil Lines Zone',
+    'Karol Bagh Zone',
+    'Keshavpuram Zone',
+    'Najafgarh Zone',
+    'Narela Zone',
+    'Rohini Zone',
+    'Shahdara North Zone',
+    'Shahdara South Zone',
+    'South Zone',
+    'West Zone',
 ]
 
 ISSUE_NAMES = [
@@ -51,10 +57,32 @@ USER_ROWS = [
     ('Admin User', 'admin@crm.in', '1234', 'admin', [], True),
     ('Priya Sharma', 'priya@crm.in', '1234', 'helpdesk', [], True),
     ('Meera Kapoor', 'meera@crm.in', '1234', 'helpdesk', [], True),
-    ('Ravi Kumar', 'ravi@crm.in', '1234', 'engineer', ['Zone North', 'Zone South'], True),
-    ('Arjun Nambiar', 'arjun@crm.in', '1234', 'engineer', ['Zone Central', 'Zone East'], True),
-    ('Pooja Hegde', 'pooja@crm.in', '1234', 'engineer', ['Zone South', 'Zone West'], True),
-    ('Deepak Verma', 'deepak@crm.in', '1234', 'engineer', ['Zone East'], False),
+    ('Ravi Kumar', 'ravi@crm.in', '1234', 'engineer',
+     ['Civil Lines Zone', 'Karol Bagh Zone'], True),
+    ('Sandeep Rawat', 'sandeep@crm.in', '1234', 'engineer',
+     ['Civil Lines Zone', 'Karol Bagh Zone'], True),
+    ('Arjun Nambiar', 'arjun@crm.in', '1234', 'engineer',
+     ['Keshavpuram Zone', 'Rohini Zone'], True),
+    ('Anil Chauhan', 'anil@crm.in', '1234', 'engineer',
+     ['Keshavpuram Zone', 'Rohini Zone'], True),
+    ('Pooja Hegde', 'pooja@crm.in', '1234', 'engineer',
+     ['Central Zone', 'City-SP Zone'], True),
+    ('Nidhi Arora', 'nidhi@crm.in', '1234', 'engineer',
+     ['Central Zone', 'City-SP Zone'], True),
+    ('Kavita Menon', 'kavita@crm.in', '1234', 'engineer',
+     ['Najafgarh Zone', 'West Zone'], True),
+    ('Imran Qureshi', 'imran@crm.in', '1234', 'engineer',
+     ['Najafgarh Zone', 'West Zone'], True),
+    ('Rohit Bansal', 'rohit@crm.in', '1234', 'engineer',
+     ['Narela Zone', 'Shahdara North Zone'], True),
+    ('Harpreet Singh', 'harpreet@crm.in', '1234', 'engineer',
+     ['Narela Zone', 'Shahdara North Zone'], True),
+    ('Sneha Iyer', 'sneha@crm.in', '1234', 'engineer',
+     ['Shahdara South Zone', 'South Zone'], True),
+    ('Farah Khan', 'farah@crm.in', '1234', 'engineer',
+     ['Shahdara South Zone', 'South Zone'], True),
+    ('Deepak Verma', 'deepak@crm.in', '1234', 'engineer',
+     ['Shahdara South Zone'], False),
 ]
 
 CALLER_NAMES = [
@@ -142,7 +170,7 @@ class Command(BaseCommand):
     def seed(self):
         self.stdout.write('[SEED] Creating zones...', ending='')
         zones = {}
-        for zone_name in ZONE_NAMES:
+        for zone_name in MCD_ZONE_NAMES:
             zones[zone_name] = Zone.objects.create(name=zone_name)
         self.stdout.write(f' done ({len(zones)})')
 
@@ -192,10 +220,11 @@ class Command(BaseCommand):
             zone.save(update_fields=['created_by'])
 
         admin = users['admin@crm.in']
-        for email in ['priya@crm.in', 'meera@crm.in', 'ravi@crm.in',
-                      'arjun@crm.in', 'pooja@crm.in', 'deepak@crm.in']:
-            users[email].created_by = admin
-            users[email].save(update_fields=['created_by'])
+        for email, user in users.items():
+            if email == 'admin@crm.in':
+                continue
+            user.created_by = admin
+            user.save(update_fields=['created_by'])
 
         self.stdout.write(f' done ({len(users)})')
 
@@ -212,7 +241,13 @@ class Command(BaseCommand):
             users['arjun@crm.in'],
             users['pooja@crm.in'],
         ]
-        zone_list = [zones[name] for name in ZONE_NAMES]
+        zone_list = [zones[name] for name in MCD_ZONE_NAMES]
+        zone_engineers = {zone.name: [] for zone in zone_list}
+        for _, email, _, role, zone_names, is_active in USER_ROWS:
+            if role != 'engineer' or not is_active:
+                continue
+            for zone_name in zone_names:
+                zone_engineers[zone_name].append(users[email])
 
         status_plan = (
             ['open'] * 5
@@ -228,7 +263,8 @@ class Command(BaseCommand):
         for index, target_status in enumerate(status_plan):
             creator = hd_users[index % len(hd_users)]
             zone = zone_list[index % len(zone_list)]
-            engineer = engineers[index % len(engineers)]
+            zone_engineer_pool = zone_engineers[zone.name]
+            engineer = zone_engineer_pool[index % len(zone_engineer_pool)]
             issue = issues[index % (len(issues) - 1)]
 
             complaint = Complaint.objects.create(

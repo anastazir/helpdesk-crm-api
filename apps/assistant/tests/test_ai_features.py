@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.assistant.analytics import AnalyticsValidationError, validate_analytics_sql
-from apps.assistant.models import AIRequestLog
+from apps.assistant.models import AIRequestLog, AssistantSettings
 from apps.assistant.tools import execute_tool
 from apps.complaints.models import (
     Complaint,
@@ -500,3 +500,199 @@ class AssistantFeatureAPITest(APITestCase):
             {'created_within_hours': 2},
         )
         self.assertEqual(result['count'], 0)
+
+
+    def test_complaint_create_accepts_address_remark_and_location(self):
+        self.client.force_authenticate(self.helpdesk)
+        response = self.client.post(
+            reverse('complaint-list'),
+            {
+                'caller_phone': '9876543210',
+                'zone_id': self.zone.id,
+                'issue_ids': [self.issue.id],
+                'address': 'Connaught Place, New Delhi',
+                'address_remark': 'near Rajiv Chowk metro station',
+                'pincode': '110001',
+                'latitude': '28.631769',
+                'longitude': '77.219380',
+                'geocode_status': 'address',
+                'geocode_label': 'Connaught Place, New Delhi',
+                'geocode_provider': 'nominatim',
+                'map_radius_m': 150,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            response.data['data']['address_remark'],
+            'near Rajiv Chowk metro station',
+        )
+        self.assertEqual(response.data['data']['geocode_status'], 'address')
+        self.assertEqual(response.data['data']['latitude'], '28.631769')
+
+    def test_updating_address_clears_stale_location(self):
+        Complaint.objects.filter(pk=self.complaint.pk).update(
+            latitude='28.631769',
+            longitude='77.219380',
+            geocode_status='address',
+            geocode_label='Old location',
+            geocode_provider='nominatim',
+            map_radius_m=150,
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.patch(
+            reverse('complaint-detail', args=[self.complaint.id]),
+            {'address': 'A different address'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['data']['latitude'])
+        self.assertIsNone(response.data['data']['longitude'])
+        self.assertEqual(
+            response.data['data']['geocode_status'],
+            'not_geocoded',
+        )
+
+    @patch('apps.assistant.views.geocode_location')
+    @patch('apps.assistant.views.generate_geocode_queries')
+    def test_geocode_preview_endpoint(self, plan, geocode):
+        plan.return_value = (
+            {
+                'queries': [
+                    {'query': 'Connaught Place, 110001, India', 'kind': 'address'}
+                ],
+                'note': 'Locality is clear.',
+            },
+            {
+                'model': 'deepseek/deepseek-v4.1-flash-1017',
+                'provider': 'Test Provider',
+                'usage': {
+                    'prompt_tokens': 50,
+                    'completion_tokens': 20,
+                    'total_tokens': 70,
+                    'cost': 0.00005,
+                },
+            },
+            120,
+        )
+        geocode.return_value = {
+            'status': 'address',
+            'label': 'Connaught Place, New Delhi',
+            'provider': 'nominatim',
+            'latitude': 28.631769,
+            'longitude': 77.219380,
+            'map_radius_m': 150,
+            'queries': [],
+        }
+        self.client.force_authenticate(self.helpdesk)
+
+        response = self.client.post(
+            reverse('assistant-geocode'),
+            {
+                'address': 'Connaught Place, New Delhi',
+                'address_remark': 'near Rajiv Chowk',
+                'pincode': '110001',
+                'language': 'en',
+                'use_ai': True,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['data']['ai_assisted'])
+        self.assertEqual(response.data['data']['latitude'], 28.631769)
+        self.assertEqual(
+            response.data['data']['ai_usage']['cost_inr'],
+            0.0044,
+        )
+
+    @patch('apps.complaints.views.geocode_location')
+    def test_complaint_geocode_action_updates_location(self, geocode):
+        geocode.return_value = {
+            'status': 'pincode',
+            'label': '110001, Delhi',
+            'provider': 'nominatim',
+            'latitude': 28.631769,
+            'longitude': 77.219380,
+            'map_radius_m': 2500,
+            'queries': [],
+        }
+        Complaint.objects.filter(pk=self.complaint.pk).update(
+            address='Connaught Place',
+            pincode='110001',
+        )
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            reverse('complaint-geocode', args=[self.complaint.id])
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['geocode_status'], 'pincode')
+        self.assertEqual(response.data['data']['latitude'], '28.631769')
+
+
+    def test_manual_location_pin_is_admin_hd_only_and_saved(self):
+        self.client.force_authenticate(self.engineer)
+        forbidden = self.client.post(
+            reverse('complaint-location', args=[self.complaint.id]),
+            {'latitude': '28.6139', 'longitude': '77.2090'},
+            format='json',
+        )
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.admin)
+        response = self.client.post(
+            reverse('complaint-location', args=[self.complaint.id]),
+            {'latitude': '28.6139', 'longitude': '77.2090'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['geocode_status'], 'manual')
+        self.assertEqual(response.data['data']['geocode_provider'], 'manual')
+        self.assertEqual(response.data['data']['latitude'], '28.613900')
+        self.assertEqual(response.data['data']['map_radius_m'], 50)
+
+
+    def test_ai_settings_admin_toggle_and_endpoint_block(self):
+        self.client.force_authenticate(self.admin)
+        initial = self.client.get(reverse('assistant-settings'))
+        self.assertEqual(initial.status_code, status.HTTP_200_OK)
+        self.assertTrue(initial.data['data']['ai_enabled'])
+
+        off = self.client.patch(
+            reverse('assistant-settings'),
+            {'ai_enabled': False},
+            format='json',
+        )
+        self.assertEqual(off.status_code, status.HTTP_200_OK)
+        self.assertFalse(off.data['data']['ai_enabled'])
+
+        blocked = self.client.post(
+            reverse('assistant-chat'),
+            {'message': 'hello', 'history': [], 'language': 'en'},
+            format='json',
+        )
+        self.assertEqual(blocked.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        self.client.force_authenticate(self.helpdesk)
+        forbidden = self.client.patch(
+            reverse('assistant-settings'),
+            {'ai_enabled': True},
+            format='json',
+        )
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.admin)
+        on = self.client.patch(
+            reverse('assistant-settings'),
+            {'ai_enabled': True},
+            format='json',
+        )
+        self.assertEqual(on.status_code, status.HTTP_200_OK)
+        self.assertTrue(on.data['data']['ai_enabled'])
+        AssistantSettings.objects.update(ai_enabled=True)

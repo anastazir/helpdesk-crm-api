@@ -60,7 +60,27 @@ class Complaint(models.Model):
     department = models.CharField(max_length=255, null=True, blank=True)
     designation = models.CharField(max_length=255, null=True, blank=True)
     address = models.TextField(null=True, blank=True)
+    address_remark = models.TextField(null=True, blank=True)
     pincode = models.CharField(max_length=10, null=True, blank=True)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    geocode_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('not_geocoded', 'Not geocoded'),
+            ('address', 'Address match'),
+            ('landmark', 'Landmark approximate'),
+            ('pincode', 'Pincode area'),
+            ('manual', 'Manually pinned'),
+            ('not_found', 'Not found'),
+            ('failed', 'Failed'),
+        ],
+        default='not_geocoded',
+    )
+    geocode_label = models.CharField(max_length=500, blank=True, default='')
+    geocode_provider = models.CharField(max_length=50, blank=True, default='')
+    geocode_updated_at = models.DateTimeField(null=True, blank=True)
+    map_radius_m = models.PositiveIntegerField(null=True, blank=True)
     cpu_serial = models.CharField(max_length=100, null=True, blank=True)
     monitor_serial = models.CharField(max_length=100, null=True, blank=True)
     issues = models.ManyToManyField(IssueType, blank=True, related_name='complaints')

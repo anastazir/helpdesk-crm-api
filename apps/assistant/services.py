@@ -745,6 +745,7 @@ AUTOFILL_SCHEMA = {
             'department': {'type': ['string', 'null']},
             'designation': {'type': ['string', 'null']},
             'address': {'type': ['string', 'null']},
+            'address_remark': {'type': ['string', 'null']},
             'pincode': {'type': ['string', 'null']},
             'cpu_serial': {'type': ['string', 'null']},
             'monitor_serial': {'type': ['string', 'null']},
@@ -763,6 +764,7 @@ AUTOFILL_SCHEMA = {
             'department',
             'designation',
             'address',
+            'address_remark',
             'pincode',
             'cpu_serial',
             'monitor_serial',
@@ -980,3 +982,80 @@ def generate_analytics_answer(question, plan, result, language='en'):
         operation='AI analytics answer',
     )
     return content, data, latency
+
+
+GEOCODE_QUERY_SCHEMA = {
+    'name': 'geocode_queries',
+    'strict': True,
+    'schema': {
+        'type': 'object',
+        'properties': {
+            'normalized_address': {'type': ['string', 'null']},
+            'landmark': {'type': ['string', 'null']},
+            'locality': {'type': ['string', 'null']},
+            'pincode': {'type': ['string', 'null']},
+            'queries': {
+                'type': 'array',
+                'minItems': 1,
+                'maxItems': 3,
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'query': {'type': 'string'},
+                        'kind': {
+                            'type': 'string',
+                            'enum': ['address', 'landmark', 'pincode'],
+                        },
+                    },
+                    'required': ['query', 'kind'],
+                    'additionalProperties': False,
+                },
+            },
+            'note': {'type': 'string'},
+        },
+        'required': [
+            'normalized_address',
+            'landmark',
+            'locality',
+            'pincode',
+            'queries',
+            'note',
+        ],
+        'additionalProperties': False,
+    },
+}
+
+
+def generate_geocode_queries(address, address_remark, pincode, language='en'):
+    system = (
+        'You prepare search queries for an OpenStreetMap geocoder in India. '
+        'Use only facts explicitly present in the supplied address, landmark '
+        'remark, and pincode. Never invent coordinates. Return 1-3 short, '
+        'specific queries: a normalized full address, a landmark query, and a '
+        'pincode query when possible. Include "India" where useful. The note '
+        'should be a short human explanation of what is certain vs approximate. '
+        'Return JSON matching the schema. Use plain text values.'
+    )
+    payload = {
+        'address': address,
+        'address_remark': address_remark,
+        'pincode': pincode,
+        'reply_language': _language_name(language),
+    }
+    content, data, latency = _simple_completion(
+        system,
+        json.dumps(payload, ensure_ascii=False),
+        settings.AI_COPILOT_MAX_TOKENS,
+        response_format={
+            'type': 'json_schema',
+            'json_schema': GEOCODE_QUERY_SCHEMA,
+        },
+        operation='AI geocode query planning',
+    )
+    try:
+        parsed = json.loads(content)
+    except ValueError as exc:
+        raise BriefingUpstreamError(
+            'The geocoder planner returned an invalid response.'
+        ) from exc
+    return parsed, data, latency
