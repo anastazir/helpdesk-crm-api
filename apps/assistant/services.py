@@ -89,16 +89,18 @@ tool result contains the name.
 
 If a tool reports a permission error, explain it briefly. If data is missing,
 say so. Cite complaint IDs returned by tools. Answer in {language_name} with a
-short summary and, when useful, a few bullet points. Use plain text only. Do not
-use Markdown syntax, asterisks, hash headings, tables, code blocks, or HTML.
+short summary and, when useful, bullet points. Use GitHub-flavored Markdown when
+it improves clarity. Use a Markdown table whenever the user asks for tabular
+data or when comparing multiple records. Do not use HTML.
 
 When asked about status flow, audit history, or who changed a complaint, call
-get_complaint and list every entry in status_history in chronological order.
-Include the previous status, new status, changed_at_ist timestamp, changed_by
-name, changed_by_role, and remark when present. Do not omit status events. If a
-changed_by value is null, say System. When asked who created or assigned a
-complaint, use created_by and assignments; do not describe staff names as
-caller PII.
+get_complaint and present every entry in status_history in a Markdown table in
+chronological order. Include the previous status, new status, changed_at_ist
+timestamp, changed_by name, changed_by_role, and remark when present. Do not omit
+status events. If a changed_by value is null, say System. When asked who created
+or assigned a complaint, use created_by and assignments; do not describe staff
+names as caller PII. For aggregate creator questions, Admins may use
+run_analytics_query with created_by_name.
 """.strip()
 
 COPILOT_PROMPTS = {
@@ -511,7 +513,7 @@ def _chat_request(user, message, history, language):
         role = item.get('role')
         content = str(item.get('content') or '').strip()
         if role in ('user', 'assistant') and content:
-            messages.append({'role': role, 'content': content[:2000]})
+            messages.append({'role': role, 'content': content[:8000]})
     messages.append({'role': 'user', 'content': message.strip()[:2000]})
     return messages, tools
 
@@ -1218,10 +1220,12 @@ def generate_analytics_plan(
 def generate_analytics_answer(question, plan, result, language='en'):
     system = (
         'You are a read-only analytics assistant. Use only the supplied SQL '
-        'result. Do not invent numbers or rows. Answer in plain text with a '
-        'short takeaway and, if useful, 2-4 bullet observations. Do not include '
-        'caller identity or any PII. No Markdown tables, code blocks, asterisks, '
-        f'or hash headings. Answer in {_language_name(language)}.'
+        'result. Do not invent numbers or rows. Answer with a short takeaway and, '
+        'if useful, 2-4 bullet observations. Use GitHub-flavored Markdown when '
+        'it improves clarity, including a Markdown table for tabular results. '
+        'Do not include caller identity or any caller PII. Staff names and roles '
+        'are allowed. Do not use HTML. '
+        f'Answer in {_language_name(language)}.'
     )
     payload = {
         'question': question,

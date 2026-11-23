@@ -142,12 +142,13 @@ def analytics_dialect():
 def analytics_schema_text():
     return """
 Available analytics views (read-only; no caller PII):
-- analytics_complaints(complaint_id, created_at, status, zone, department, assigned_engineer_id, assigned_engineer)
+- analytics_complaints(complaint_id, created_at, status, zone, department, assigned_engineer_id, assigned_engineer, created_by_id, created_by_name, created_by_role)
 - analytics_complaint_issues(complaint_id, issue_id, issue)
-- analytics_status_events(id, complaint_id, previous_status, new_status, changed_at)
-- analytics_assignments(id, complaint_id, engineer_id, engineer, assigned_at, unassigned_at)
+- analytics_status_events(id, complaint_id, previous_status, new_status, changed_at, changed_by_id, changed_by_name, changed_by_role)
+- analytics_assignments(id, complaint_id, engineer_id, engineer, assigned_at, unassigned_at, assigned_by_id, assigned_by_name, assigned_by_role, unassigned_by_id, unassigned_by_name, unassigned_by_role)
 
-Only use these views. Do not use base application tables.
+Only use these views. Do not use base application tables. Staff names and roles
+are available in the *_name and *_role columns. Caller PII is intentionally absent.
 Complaint statuses: open, assigned, in_progress, parts_requested, parts_provided, resolved, closed.
 The reporting timezone is Asia/Kolkata. Current server time will be supplied in the prompt.
 """.strip()

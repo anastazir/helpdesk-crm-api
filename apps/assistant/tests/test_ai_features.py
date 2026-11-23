@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.db import connection
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -173,7 +174,7 @@ class AssistantFeatureAPITest(APITestCase):
         self.assertEqual(response.data['data']['tools_used'], ['get_sla_risks'])
 
     @patch('apps.assistant.views.chat_with_tools')
-    def test_chat_endpoint_allows_engineer(self, chat):
+    def test_chat_endpoint_rejects_engineer(self, chat):
         chat.return_value = {
             'reply': 'Your plan is ready.',
             'references': [],
@@ -189,7 +190,8 @@ class AssistantFeatureAPITest(APITestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        chat.assert_not_called()
 
     @patch('apps.assistant.views.stream_chat_with_tools')
     def test_chat_stream_emits_status_tokens_and_done(self, stream):
@@ -272,14 +274,14 @@ class AssistantFeatureAPITest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch('apps.assistant.views.generate_complaint_copilot')
-    def test_complaint_copilot_allows_assigned_engineer(self, copilot):
+    def test_complaint_copilot_allows_admin(self, copilot):
         copilot.return_value = {
             'text': 'Summary',
             'task': 'summary',
             'language': 'en',
             **result_meta(),
         }
-        self.client.force_authenticate(self.engineer)
+        self.client.force_authenticate(self.admin)
 
         response = self.client.post(
             reverse('assistant-complaint-copilot'),
@@ -294,13 +296,13 @@ class AssistantFeatureAPITest(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     @patch('apps.assistant.views.generate_engineer_plan')
-    def test_engineer_plan_is_engineer_only(self, plan):
+    def test_engineer_plan_is_admin_only(self, plan):
         plan.return_value = {
             'text': 'Start here.',
             'language': 'en',
             **result_meta(),
         }
-        self.client.force_authenticate(self.admin)
+        self.client.force_authenticate(self.engineer)
 
         forbidden = self.client.post(
             reverse('assistant-engineer-plan'),
@@ -310,7 +312,7 @@ class AssistantFeatureAPITest(APITestCase):
 
         self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
 
-        self.client.force_authenticate(self.engineer)
+        self.client.force_authenticate(self.admin)
         allowed = self.client.post(
             reverse('assistant-engineer-plan'),
             {'language': 'en'},
@@ -330,7 +332,7 @@ class AssistantFeatureAPITest(APITestCase):
             'language': 'en',
             **result_meta(),
         }
-        self.client.force_authenticate(self.helpdesk)
+        self.client.force_authenticate(self.admin)
 
         response = self.client.post(
             reverse('assistant-triage'),
@@ -352,7 +354,7 @@ class AssistantFeatureAPITest(APITestCase):
         self.assertEqual(response.data['data']['urgency'], 'soon')
 
     def test_triage_requires_symptoms(self):
-        self.client.force_authenticate(self.helpdesk)
+        self.client.force_authenticate(self.admin)
 
         response = self.client.post(
             reverse('assistant-triage'),
@@ -407,7 +409,7 @@ class AssistantFeatureAPITest(APITestCase):
             'language': 'en',
             **result_meta(),
         }
-        self.client.force_authenticate(self.helpdesk)
+        self.client.force_authenticate(self.admin)
 
         response = self.client.post(
             reverse('assistant-complaint-autofill'),
@@ -428,6 +430,49 @@ class AssistantFeatureAPITest(APITestCase):
             response.data['data']['fields']['caller_phone'],
             '9876543210',
         )
+
+    @patch('apps.assistant.views.chat_with_tools')
+    def test_chat_accepts_long_assistant_history(self, chat):
+        chat.return_value = {
+            'reply': 'Still here.',
+            'references': [],
+            'tools_used': [],
+            'language': 'en',
+            **result_meta(),
+        }
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.post(
+            reverse('assistant-chat'),
+            {
+                'message': 'Continue',
+                'history': [
+                    {'role': 'assistant', 'content': 'x' * 8000},
+                ],
+                'language': 'en',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['reply'], 'Still here.')
+
+    def test_analytics_schema_exposes_staff_identity(self):
+        from apps.assistant.analytics import analytics_schema_text
+
+        schema = analytics_schema_text()
+        self.assertIn('created_by_name', schema)
+        self.assertIn('created_by_role', schema)
+        self.assertIn('changed_by_name', schema)
+        self.assertIn('assigned_by_name', schema)
+        self.assertIn('Staff names and roles', schema)
+
+    def test_helpdesk_cannot_read_ai_settings(self):
+        self.client.force_authenticate(self.helpdesk)
+
+        response = self.client.get(reverse('assistant-settings'))
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_ai_logs_are_admin_only_and_include_inr_cost(self):
         AIRequestLog.objects.create(
@@ -666,7 +711,7 @@ class AssistantFeatureAPITest(APITestCase):
             'map_radius_m': 150,
             'queries': [],
         }
-        self.client.force_authenticate(self.helpdesk)
+        self.client.force_authenticate(self.admin)
 
         response = self.client.post(
             reverse('assistant-geocode'),

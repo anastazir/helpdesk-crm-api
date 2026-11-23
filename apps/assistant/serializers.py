@@ -5,7 +5,7 @@ from apps.exports.serializers import ExportFiltersSerializer
 
 class ChatMessageSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=['user', 'assistant'])
-    content = serializers.CharField(max_length=2000)
+    content = serializers.CharField(max_length=20000)
 
 
 class ChatRequestSerializer(serializers.Serializer):

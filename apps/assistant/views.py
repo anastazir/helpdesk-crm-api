@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 from apps.complaints.models import Complaint, IssueType
 from apps.exports.builder import get_matching_complaints, deduplicate_complaints
 from apps.zones.models import Zone
+from core.permissions import IsAdmin
 from core.responses import error_response, success_response
 
 from .serializers import (
@@ -115,7 +116,7 @@ def _ai_disabled_response():
 
 
 class DailyBriefingView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if request.user.role not in ('admin', 'helpdesk'):
@@ -174,7 +175,7 @@ class DailyBriefingView(APIView):
 
 
 class ChatView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -238,7 +239,7 @@ class ChatView(APIView):
 
 
 class ChatStreamView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -323,7 +324,7 @@ class ChatStreamView(APIView):
 
 
 class ComplaintCopilotView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -404,14 +405,11 @@ class ComplaintCopilotView(APIView):
 
 
 class EngineerPlanView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
             return _ai_disabled_response()
-        if request.user.role != 'engineer':
-            return _role_forbidden('The daily plan is available to engineers.')
-
         serializer = EngineerPlanRequestSerializer(data=request.data)
         if not serializer.is_valid():
             return error_response(
@@ -463,7 +461,7 @@ class EngineerPlanView(APIView):
 
 
 class TriageView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -553,7 +551,7 @@ class TriageView(APIView):
 
 
 class ExportSummaryView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -662,7 +660,7 @@ class ExportSummaryView(APIView):
 
 
 class ComplaintAutofillView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -817,7 +815,7 @@ def _analytics_result_meta(usage, latency, data):
 
 
 class AnalyticsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def post(self, request):
         if not ai_features_enabled():
@@ -1069,6 +1067,7 @@ class GeocodeView(APIView):
             and settings.GEOCODE_AI_ENABLED
             and bool(settings.OPENROUTER_API_KEY)
             and ai_features_enabled()
+            and request.user.role == 'admin'
         )
         try:
             if use_ai:
@@ -1145,7 +1144,7 @@ class GeocodeView(APIView):
 
 
 class AssistantSettingsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
         row = AssistantSettings.load()

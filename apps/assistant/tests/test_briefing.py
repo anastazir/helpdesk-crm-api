@@ -119,7 +119,7 @@ class AssistantBriefingTest(APITestCase):
         generate.assert_called_once()
 
     @patch('apps.assistant.views.generate_briefing')
-    def test_helpdesk_receives_briefing(self, generate):
+    def test_admin_receives_briefing(self, generate):
         generate.return_value = {
             'briefing': 'Briefing',
             'generated_at': '2026-11-22T10:00:00+05:30',
@@ -135,7 +135,7 @@ class AssistantBriefingTest(APITestCase):
             },
             'latency_ms': 1200,
         }
-        self.client.force_authenticate(self.helpdesk)
+        self.client.force_authenticate(self.admin)
 
         response = self.client.post(reverse('assistant-briefing'))
 
