@@ -100,6 +100,10 @@ class Complaint(models.Model):
             last = Complaint.objects.order_by('-id').first()
             self.id = (last.id + 1) if last else 100001
             logger.info(f'[COMPLAINT] New complaint ID assigned: {self.id}')
+        if self.geocode_label is None:
+            self.geocode_label = ''
+        if self.geocode_provider is None:
+            self.geocode_provider = ''
         super().save(*args, **kwargs)
 
     def get_current_assignment(self):
