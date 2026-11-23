@@ -44,6 +44,28 @@ class LoginTest(BaseAPITest):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertIn('disabled', response.data['message'].lower())
 
+    def test_login_with_phone_identifier(self):
+        response = self.client.post('/api/auth/login/', {
+            'identifier': self.hd.phone,
+            'password': 'HD@123',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['user']['email'], self.hd.email)
+
+    def test_login_normalizes_country_code_phone(self):
+        response = self.client.post('/api/auth/login/', {
+            'identifier': f'+91{self.hd.phone}',
+            'password': 'HD@123',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_login_rejects_malformed_phone(self):
+        response = self.client.post('/api/auth/login/', {
+            'identifier': '12345',
+            'password': 'HD@123',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_login_response_shape(self):
         response = self.client.post('/api/auth/login/', {
             'email': self.hd.email,

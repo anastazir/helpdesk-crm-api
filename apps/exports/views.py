@@ -8,7 +8,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.views import APIView
 
-from core.permissions import IsAdminOrHD
+from core.permissions import IsAdmin, IsAdminOrHD
 from core.responses import error_response, success_response
 
 from .builder import (
@@ -17,7 +17,17 @@ from .builder import (
     get_column_value,
     get_matching_complaints,
 )
-from .serializers import COLUMN_HEADERS, ExportDownloadSerializer, ExportPreviewSerializer
+from .serializers import (
+    COLUMN_HEADERS,
+    ExportDownloadSerializer,
+    ExportPreviewSerializer,
+    UserAuditExportSerializer,
+)
+from .user_audit import (
+    audit_preview_payload,
+    build_audit_workbook,
+    get_filtered_audit_logs,
+)
 
 logger = logging.getLogger('apps.exports')
 
@@ -111,5 +121,46 @@ class ExportDownloadView(APIView):
         )
         response['Content-Disposition'] = (
             f'attachment; filename="complaints_export_{date.today():%Y%m%d}.xlsx"'
+        )
+        return response
+
+
+@extend_schema(tags=['export'])
+class UserAuditExportPreviewView(APIView):
+    permission_classes = [IsAdmin]
+    serializer_class = UserAuditExportSerializer
+
+    def post(self, request):
+        serializer = UserAuditExportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response('Validation failed.', serializer.errors)
+        filters = serializer.validated_data.get('filters') or {}
+        return success_response(data=audit_preview_payload(get_filtered_audit_logs(filters)))
+
+
+@extend_schema(tags=['export'])
+class UserAuditExportDownloadView(APIView):
+    permission_classes = [IsAdmin]
+    serializer_class = UserAuditExportSerializer
+
+    def post(self, request):
+        serializer = UserAuditExportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response('Validation failed.', serializer.errors)
+        filters = serializer.validated_data.get('filters') or {}
+        logs = list(get_filtered_audit_logs(filters))
+        workbook = build_audit_workbook(logs)
+        buffer = BytesIO()
+        workbook.save(buffer)
+        buffer.seek(0)
+        response = HttpResponse(
+            buffer.getvalue(),
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = (
+            f'attachment; filename="user_audit_export_{date.today():%Y%m%d}.xlsx"'
+        )
+        logger.info(
+            f'[EXPORT] {request.user.email} exported {len(logs)} user audit events'
         )
         return response

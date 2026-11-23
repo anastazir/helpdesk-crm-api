@@ -30,7 +30,7 @@ class Zone(models.Model):
             if action == 'added'
         ]
         return User.objects.filter(
-            id__in=engineer_ids, role='engineer', is_active=True
+            id__in=engineer_ids, role='engineer', is_active=True, is_deleted=False
         ).order_by('full_name')
 
     def get_engineer_count(self):

@@ -10,8 +10,8 @@ class AssignEngineerTest(BaseAPITest):
         super().setUp()
         self.complaint = self.make_complaint()
 
-    def test_hd_assigns_engineer(self):
-        self.auth_as(self.hd)
+    def test_supervisor_assigns_engineer(self):
+        self.auth_as(self.supervisor)
         response = self.client.post(
             f'/api/complaints/{self.complaint.id}/assign/',
             {'engineer_id': self.engineer.id},
@@ -43,8 +43,17 @@ class AssignEngineerTest(BaseAPITest):
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_assign_creates_status_history_entry(self):
+    def test_hd_cannot_assign(self):
         self.auth_as(self.hd)
+        response = self.client.post(
+            f'/api/complaints/{self.complaint.id}/assign/',
+            {'engineer_id': self.engineer.id},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_assign_creates_status_history_entry(self):
+        self.auth_as(self.supervisor)
         self.client.post(
             f'/api/complaints/{self.complaint.id}/assign/',
             {'engineer_id': self.engineer.id},
@@ -58,7 +67,7 @@ class AssignEngineerTest(BaseAPITest):
 
     def test_cannot_assign_to_closed_complaint(self):
         closed = self.make_complaint(status='closed')
-        self.auth_as(self.hd)
+        self.auth_as(self.supervisor)
         response = self.client.post(
             f'/api/complaints/{closed.id}/assign/',
             {'engineer_id': self.engineer.id},
@@ -78,7 +87,7 @@ class ReassignEngineerTest(BaseAPITest):
         self.assignment = self.assign_engineer(self.complaint, self.engineer)
 
     def reassign(self):
-        self.auth_as(self.hd)
+        self.auth_as(self.supervisor)
         return self.client.post(
             f'/api/complaints/{self.complaint.id}/assign/',
             {'engineer_id': self.other_engineer.id},
@@ -90,7 +99,7 @@ class ReassignEngineerTest(BaseAPITest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assignment.refresh_from_db()
         self.assertIsNotNone(self.assignment.unassigned_at)
-        self.assertEqual(self.assignment.unassigned_by, self.hd)
+        self.assertEqual(self.assignment.unassigned_by, self.supervisor)
 
     def test_reassign_creates_new_assignment(self):
         self.reassign()
@@ -126,7 +135,7 @@ class AssignmentHistoryTest(BaseAPITest):
             email='other-eng@test.com', password='Eng@123',
             full_name='Other Engineer', role='engineer', phone='9876543210',
         )
-        self.auth_as(self.hd)
+        self.auth_as(self.supervisor)
         self.client.post(
             f'/api/complaints/{complaint.id}/assign/',
             {'engineer_id': other_engineer.id},

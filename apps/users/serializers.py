@@ -4,7 +4,8 @@ from rest_framework import serializers
 
 from apps.zones.models import EngineerZoneAssignment, Zone
 
-from .models import User
+from .models import User, UserAuditLog
+from .phone import InvalidPhoneError, normalize_phone
 
 
 class ZoneMiniSerializer(serializers.ModelSerializer):
@@ -94,8 +95,29 @@ class MeSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    identifier = serializers.CharField(required=False, allow_blank=False)
+    email = serializers.EmailField(required=False, allow_blank=False)
     password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        identifier = (attrs.get('identifier') or attrs.get('email') or '').strip()
+        if not identifier:
+            raise serializers.ValidationError(
+                {'identifier': ['Enter your email or phone number.']}
+            )
+        if '@' in identifier:
+            email_field = serializers.EmailField()
+            try:
+                email_field.run_validation(identifier)
+            except serializers.ValidationError as exc:
+                raise serializers.ValidationError({'identifier': exc.detail})
+        else:
+            try:
+                identifier = normalize_phone(identifier)
+            except InvalidPhoneError as exc:
+                raise serializers.ValidationError({'identifier': [str(exc)]})
+        attrs['identifier'] = identifier
+        return attrs
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
@@ -112,6 +134,15 @@ class UserCreateSerializer(serializers.ModelSerializer):
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError('A user with this email already exists.')
         return value
+
+    def validate_phone(self, value):
+        try:
+            normalized = normalize_phone(value)
+        except InvalidPhoneError as exc:
+            raise serializers.ValidationError(str(exc))
+        if User.objects.filter(phone=normalized).exists():
+            raise serializers.ValidationError('A user with this phone already exists.')
+        return normalized
 
     def create(self, validated_data):
         zone_ids = validated_data.pop('zone_ids', [])
@@ -137,7 +168,21 @@ class UserCreateSerializer(serializers.ModelSerializer):
 class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['full_name', 'phone']
+        fields = ['full_name', 'email', 'phone']
+
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError('A user with this email already exists.')
+        return value
+
+    def validate_phone(self, value):
+        try:
+            normalized = normalize_phone(value)
+        except InvalidPhoneError as exc:
+            raise serializers.ValidationError(str(exc))
+        if User.objects.filter(phone=normalized).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError('A user with this phone already exists.')
+        return normalized
 
 
 class ResetPasswordSerializer(serializers.Serializer):
@@ -146,3 +191,16 @@ class ResetPasswordSerializer(serializers.Serializer):
 
 class UserZoneSerializer(serializers.Serializer):
     zone_id = serializers.IntegerField()
+
+
+class UserAuditLogSerializer(serializers.ModelSerializer):
+    actor_id = serializers.IntegerField(read_only=True)
+    target_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = UserAuditLog
+        fields = [
+            'id', 'action', 'actor_id', 'actor_name', 'actor_email', 'actor_role',
+            'target_id', 'target_name', 'target_email', 'target_phone',
+            'target_role', 'changes', 'note', 'source', 'created_at',
+        ]

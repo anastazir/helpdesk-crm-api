@@ -44,7 +44,7 @@ class ComplaintListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Complaint
         fields = [
-            'id', 'caller_name', 'caller_phone', 'zone', 'issues', 'status',
+            'id', 'reference', 'caller_name', 'caller_phone', 'zone', 'issues', 'status',
             'assigned_engineer', 'created_by', 'created_at',
             'time_open_seconds', 'time_in_status_seconds',
         ]
@@ -68,7 +68,7 @@ class EngineerLimitedComplaintSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Complaint
-        fields = ['id', 'zone', 'address', 'status', 'created_at']
+        fields = ['id', 'reference', 'zone', 'address', 'status', 'created_at']
 
     @extend_schema_field(OpenApiTypes.STR)
     def get_zone(self, obj):
@@ -95,7 +95,7 @@ class ComplaintDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Complaint
         fields = [
-            'id', 'caller_phone', 'caller_name', 'bmid', 'aadhaar', 'zone',
+            'id', 'reference', 'caller_phone', 'caller_name', 'bmid', 'aadhaar', 'zone',
             'department', 'designation', 'address', 'address_remark', 'pincode',
             'cpu_serial', 'monitor_serial', 'issues', 'others_description',
             'status', 'latitude', 'longitude', 'geocode_status',

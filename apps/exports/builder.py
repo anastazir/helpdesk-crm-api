@@ -94,7 +94,7 @@ def format_time_open(seconds):
 
 def get_column_value(complaint, column):
     if column == 'id':
-        return complaint.id
+        return complaint.reference
     if column == 'caller_name':
         return complaint.caller_name or ''
     if column == 'caller_phone':

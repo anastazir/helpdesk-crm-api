@@ -239,3 +239,42 @@ class ZoneAssignmentTest(BaseAPITest):
         response = self.client.get(f'/api/users/{self.engineer.id}/zone-history/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['data']), 2)
+
+
+class UserAuditAndDeleteTest(BaseAPITest):
+    def test_admin_can_soft_delete_user_and_audit_is_written(self):
+        self.auth_as(self.admin)
+        response = self.client.delete(f'/api/users/{self.engineer.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertTrue(self.engineer.is_deleted)
+        self.assertFalse(self.engineer.is_active)
+        audit = self.client.get('/api/users/audit-logs/')
+        self.assertEqual(audit.status_code, status.HTTP_200_OK)
+        self.assertTrue(any(
+            row['action'] == 'deleted' for row in audit.data['data']['results']
+        ))
+
+    def test_delete_blocked_by_active_assignment(self):
+        complaint = self.make_complaint(status='assigned')
+        self.assign_engineer(complaint, self.engineer)
+        self.auth_as(self.admin)
+        response = self.client.delete(f'/api/users/{self.engineer.id}/')
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_helpdesk_cannot_read_audit_log(self):
+        self.auth_as(self.hd)
+        response = self.client.get('/api/users/audit-logs/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_update_email_and_phone_with_audit(self):
+        self.auth_as(self.admin)
+        response = self.client.patch(
+            f'/api/users/{self.engineer.id}/',
+            {'email': 'new-engineer@test.com', 'phone': '9000000099'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertEqual(self.engineer.email, 'new-engineer@test.com')
+        self.assertEqual(self.engineer.phone, '9000000099')

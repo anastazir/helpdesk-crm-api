@@ -1,6 +1,7 @@
 import logging
+from zoneinfo import ZoneInfo
 
-from django.db import models
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 logger = logging.getLogger('apps.complaints')
@@ -45,6 +46,51 @@ class IssueType(models.Model):
         return self.name
 
 
+class ComplaintReferenceSequence(models.Model):
+    period = models.CharField(max_length=7, unique=True)
+    last_value = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = 'complaint_reference_sequences'
+
+
+class ComplaintReferenceExhausted(Exception):
+    pass
+
+
+def allocate_complaint_reference(moment=None):
+    local = timezone.localtime(
+        moment or timezone.now(),
+        ZoneInfo('Asia/Kolkata'),
+    )
+    period = f'{local.year:04d}-{local.month:02d}'
+    for _ in range(3):
+        try:
+            with transaction.atomic():
+                sequence, _ = ComplaintReferenceSequence.objects.get_or_create(
+                    period=period,
+                    defaults={'last_value': 0},
+                )
+                sequence = ComplaintReferenceSequence.objects.select_for_update().get(
+                    pk=sequence.pk
+                )
+                if sequence.last_value >= 9999:
+                    raise ComplaintReferenceExhausted(
+                        'The monthly complaint reference limit has been reached.'
+                    )
+                sequence.last_value += 1
+                sequence.save(update_fields=['last_value'])
+                return (
+                    f'CRM-{local.month:02d}-{local.year % 100:02d}-'
+                    f'{sequence.last_value:04d}'
+                )
+        except IntegrityError:
+            continue
+    raise ComplaintReferenceExhausted(
+        'The complaint reference sequence could not be allocated.'
+    )
+
+
 class Complaint(models.Model):
     """
     Core entity. id is a 6-digit integer starting from 100001.
@@ -86,6 +132,7 @@ class Complaint(models.Model):
     issues = models.ManyToManyField(IssueType, blank=True, related_name='complaints')
     others_description = models.TextField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open')
+    reference = models.CharField(max_length=15, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         'users.User', on_delete=models.SET_NULL, null=True, related_name='complaints_created'
@@ -100,6 +147,8 @@ class Complaint(models.Model):
             last = Complaint.objects.order_by('-id').first()
             self.id = (last.id + 1) if last else 100001
             logger.info(f'[COMPLAINT] New complaint ID assigned: {self.id}')
+        if not self.reference:
+            self.reference = allocate_complaint_reference()
         if self.geocode_label is None:
             self.geocode_label = ''
         if self.geocode_provider is None:

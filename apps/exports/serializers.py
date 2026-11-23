@@ -91,3 +91,23 @@ class ExportDownloadSerializer(serializers.Serializer):
                 })
         attrs['effective_columns'] = column_order or columns
         return attrs
+
+
+class UserAuditExportFiltersSerializer(serializers.Serializer):
+    action = serializers.CharField(required=False, allow_blank=True)
+    actor_id = serializers.IntegerField(required=False, allow_null=True)
+    target_id = serializers.IntegerField(required=False, allow_null=True)
+    search = serializers.CharField(required=False, allow_blank=True)
+    date_from = serializers.DateField(required=False, allow_null=True)
+    date_to = serializers.DateField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        date_from = attrs.get('date_from')
+        date_to = attrs.get('date_to')
+        if date_from and date_to and date_from > date_to:
+            raise serializers.ValidationError('date_from cannot be after date_to.')
+        return attrs
+
+
+class UserAuditExportSerializer(serializers.Serializer):
+    filters = UserAuditExportFiltersSerializer(required=False)

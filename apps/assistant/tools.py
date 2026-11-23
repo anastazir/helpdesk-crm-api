@@ -141,6 +141,7 @@ def build_complaint_context(complaint):
     job_note = getattr(complaint, 'job_note', None)
     return {
         'id': complaint.id,
+        'reference': complaint.reference,
         'status': complaint.status,
         'status_label': status_label(complaint.status),
         'zone': complaint.zone.name if complaint.zone else None,
@@ -182,6 +183,7 @@ def complaint_summary(user, complaint):
     created_by = complaint.created_by
     return {
         'id': complaint.id,
+        'reference': complaint.reference,
         'status': complaint.status,
         'status_label': status_label(complaint.status),
         'zone': complaint.zone.name if complaint.zone else None,
@@ -304,23 +306,26 @@ def search_complaints(user, args):
 
 
 def get_complaint(user, args):
-    complaint_id = args.get('complaint_id')
-    if complaint_id is None:
-        raise ToolError('complaint_id is required.')
+    lookup = args.get('complaint_id')
+    if lookup is None or str(lookup).strip() == '':
+        raise ToolError('complaint_id or reference is required.')
+    lookup = str(lookup).strip()
+    queryset = Complaint.objects.select_related(
+        'zone', 'job_note', 'job_note__created_by', 'created_by'
+    ).prefetch_related(
+        'issues',
+        'uploads',
+        'status_history',
+        'assignments__engineer',
+        'comments',
+    )
     try:
-        complaint = Complaint.objects.select_related(
-            'zone', 'job_note', 'job_note__created_by', 'created_by'
-        ).prefetch_related(
-            'issues',
-            'uploads',
-            'status_history',
-            'assignments__engineer',
-            'comments',
-        ).get(pk=int(complaint_id))
-    except (TypeError, ValueError):
-        raise ToolError('complaint_id must be an integer.')
+        if lookup.isdigit():
+            complaint = queryset.get(pk=int(lookup))
+        else:
+            complaint = queryset.get(reference__iexact=lookup)
     except Complaint.DoesNotExist:
-        raise ToolNotFoundError(f'Complaint {complaint_id} was not found.')
+        raise ToolNotFoundError(f'Complaint {lookup} was not found.')
 
     if not can_view_complaint(user, complaint):
         raise ToolPermissionError('You do not have access to this complaint.')
@@ -578,7 +583,7 @@ TOOL_SCHEMAS = [
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'complaint_id': {'type': 'integer'},
+                    'complaint_id': {'type': 'string'},
                 },
                 'required': ['complaint_id'],
                 'additionalProperties': False,

@@ -1,6 +1,8 @@
 import logging
 
 from django.db.models import Q
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -16,7 +18,8 @@ from core.pagination import StandardPagination
 from core.permissions import IsAdmin
 from core.responses import error_response, success_response
 
-from .models import User
+from .audit import log_user_event
+from .models import User, UserAuditLog
 from .serializers import (
     EngineerSerializer,
     LoginSerializer,
@@ -28,6 +31,7 @@ from .serializers import (
     UserSerializer,
     UserUpdateSerializer,
     UserZoneSerializer,
+    UserAuditLogSerializer,
     ZoneHistorySerializer,
     ZoneMiniSerializer,
 )
@@ -49,22 +53,31 @@ class LoginView(APIView):
         if not serializer.is_valid():
             logger.warning('[AUTH] Failed login attempt with invalid payload')
             return error_response(
-                'Invalid credentials.', serializer.errors, status.HTTP_401_UNAUTHORIZED
+                'Enter a valid email or phone number.',
+                serializer.errors,
+                status.HTTP_400_BAD_REQUEST,
             )
 
-        email = serializer.validated_data['email']
+        identifier = serializer.validated_data['identifier']
         password = serializer.validated_data['password']
 
-        user = User.objects.filter(email__iexact=email).first()
+        if '@' in identifier:
+            user = User.objects.filter(
+                email__iexact=identifier, is_deleted=False
+            ).first()
+        else:
+            user = User.objects.filter(
+                phone=identifier, is_deleted=False
+            ).first()
         if user is None or not user.check_password(password):
-            logger.warning(f'[AUTH] Failed login attempt for: {email}')
+            logger.warning(f'[AUTH] Failed login attempt for: {identifier}')
             return error_response(
                 'Invalid credentials.', 'Invalid email or password.',
                 status.HTTP_401_UNAUTHORIZED,
             )
 
-        if not user.is_active:
-            logger.warning(f'[AUTH] Disabled account login attempt: {email}')
+        if not user.is_active or user.is_deleted:
+            logger.warning(f'[AUTH] Disabled account login attempt: {identifier}')
             return error_response(
                 'Your account has been disabled. Contact your administrator.',
                 'Your account has been disabled. Contact your administrator.',
@@ -162,7 +175,7 @@ class UserViewSet(viewsets.GenericViewSet):
 
     @extend_schema(tags=['users'], responses={200: UserSerializer(many=True)})
     def list(self, request):
-        queryset = self.get_queryset()
+        queryset = self.get_queryset().filter(is_deleted=False)
 
         role_values = []
         for raw in request.query_params.getlist('role'):
@@ -179,7 +192,9 @@ class UserViewSet(viewsets.GenericViewSet):
         search = request.query_params.get('search')
         if search:
             queryset = queryset.filter(
-                Q(full_name__icontains=search) | Q(email__icontains=search)
+                Q(full_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone__icontains=search)
             )
 
         page = self.paginate_queryset(queryset)
@@ -193,6 +208,7 @@ class UserViewSet(viewsets.GenericViewSet):
             return error_response('Validation failed.', serializer.errors)
 
         user = serializer.save()
+        log_user_event(action='created', actor=request.user, target=user, changes={'created': {'old': None, 'new': user.role}})
         logger.info(
             f'[USER] Created: {user.email} ({user.role}) by {request.user.email}'
         )
@@ -205,6 +221,8 @@ class UserViewSet(viewsets.GenericViewSet):
     @extend_schema(tags=['users'], responses={200: UserDetailSerializer})
     def retrieve(self, request, pk=None):
         user = self.get_object()
+        if user.is_deleted:
+            return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
         return success_response(data=UserDetailSerializer(user).data)
 
     @extend_schema(tags=['users'], request=UserUpdateSerializer, responses={200: UserDetailSerializer})
@@ -213,7 +231,16 @@ class UserViewSet(viewsets.GenericViewSet):
         serializer = UserUpdateSerializer(user, data=request.data, partial=True)
         if not serializer.is_valid():
             return error_response('Validation failed.', serializer.errors)
+        old_values = {field: getattr(user, field) for field in ['full_name', 'email', 'phone']}
         serializer.save()
+        changes = {}
+        for field in ['full_name', 'email', 'phone']:
+            old = old_values[field]
+            new = getattr(user, field)
+            if old != new:
+                changes[field] = {'old': old, 'new': new}
+        if changes:
+            log_user_event(action='updated', actor=request.user, target=user, changes=changes)
         logger.info(f'[USER] Updated: {user.email} by {request.user.email}')
         return success_response(
             data=UserDetailSerializer(user).data, message='User updated.'
@@ -223,15 +250,21 @@ class UserViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=['post'])
     def disable(self, request, pk=None):
         user = self.get_object()
-        if user.role == 'admin':
+        if user.is_deleted:
+            return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
+        if user.id == request.user.id:
+            return error_response('You cannot disable your own account.', status_code=status.HTTP_403_FORBIDDEN)
+        if user.role == 'admin' and not User.objects.filter(
+            role='admin', is_active=True, is_deleted=False
+        ).exclude(pk=user.pk).exists():
             return error_response(
-                'Admin accounts cannot be disabled.',
-                'Admin accounts cannot be disabled.',
-                status.HTTP_403_FORBIDDEN,
+                'The last active Admin cannot be disabled.',
+                status_code=status.HTTP_403_FORBIDDEN,
             )
 
         user.is_active = False
         user.save(update_fields=['is_active'])
+        log_user_event(action='disabled', actor=request.user, target=user)
         logger.warning(f'[USER] Disabled: {user.email} by {request.user.email}')
         return success_response(message='User account disabled.')
 
@@ -239,8 +272,11 @@ class UserViewSet(viewsets.GenericViewSet):
     @action(detail=True, methods=['post'])
     def enable(self, request, pk=None):
         user = self.get_object()
+        if user.is_deleted:
+            return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
         user.is_active = True
         user.save(update_fields=['is_active'])
+        log_user_event(action='enabled', actor=request.user, target=user)
         logger.info(f'[USER] Enabled: {user.email} by {request.user.email}')
         return success_response(message='User account enabled.')
 
@@ -261,13 +297,85 @@ class UserViewSet(viewsets.GenericViewSet):
 
         user.set_password(serializer.validated_data['new_password'])
         user.save(update_fields=['password'])
+        log_user_event(action='password_changed', actor=request.user, target=user)
         logger.info(f'[USER] Password reset: {user.email} by {request.user.email}')
         return success_response(message='Password updated.')
+
+    @extend_schema(tags=['users'], responses={200: UserAuditLogSerializer(many=True)})
+    @action(detail=False, methods=['get'], url_path='audit-logs')
+    def audit_logs(self, request):
+        queryset = UserAuditLog.objects.all().order_by('-created_at', '-id')
+        action_value = request.query_params.get('action')
+        if action_value:
+            queryset = queryset.filter(action=action_value)
+        actor_id = request.query_params.get('actor')
+        if actor_id:
+            queryset = queryset.filter(actor_id=actor_id)
+        target_id = request.query_params.get('target')
+        if target_id:
+            queryset = queryset.filter(target_id=target_id)
+        search = request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(target_name__icontains=search)
+                | Q(target_email__icontains=search)
+                | Q(target_phone__icontains=search)
+            )
+        date_from = request.query_params.get('date_from')
+        if date_from:
+            parsed = parse_date(date_from)
+            if parsed:
+                queryset = queryset.filter(created_at__date__gte=parsed)
+        date_to = request.query_params.get('date_to')
+        if date_to:
+            parsed = parse_date(date_to)
+            if parsed:
+                queryset = queryset.filter(created_at__date__lte=parsed)
+        page = self.paginate_queryset(queryset)
+        return self.get_paginated_response(
+            UserAuditLogSerializer(page, many=True).data
+        )
+
+    def destroy(self, request, pk=None):
+        user = self.get_object()
+        if user.is_deleted:
+            return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
+        if user.id == request.user.id:
+            return error_response('You cannot delete your own account.', status_code=status.HTTP_403_FORBIDDEN)
+        active_assignments = user.complaint_assignments.filter(
+            unassigned_at__isnull=True,
+        ).exclude(complaint__status='closed')
+        if active_assignments.exists():
+            refs = list(
+                active_assignments.values_list('complaint__reference', flat=True)
+            )
+            return error_response(
+                'Reassign active complaints before deleting this user.',
+                {'active_complaints': refs},
+                status.HTTP_409_CONFLICT,
+            )
+        if user.role == 'admin' and not User.objects.filter(
+            role='admin', is_active=True, is_deleted=False
+        ).exclude(pk=user.pk).exists():
+            return error_response(
+                'The last active Admin cannot be deleted.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        log_user_event(action='deleted', actor=request.user, target=user)
+        user.is_deleted = True
+        user.is_active = False
+        user.deleted_at = timezone.now()
+        user.deleted_by = request.user
+        user.save(update_fields=['is_deleted', 'is_active', 'deleted_at', 'deleted_by'])
+        logger.warning(f'[USER] Deleted: {user.email} by {request.user.email}')
+        return success_response(message='User deleted.')
 
     @extend_schema(tags=['users'], responses={200: EngineerSerializer(many=True)})
     @action(detail=False, methods=['get'])
     def engineers(self, request):
-        queryset = User.objects.filter(role='engineer', is_active=True).order_by('full_name')
+        queryset = User.objects.filter(
+            role='engineer', is_active=True, is_deleted=False
+        ).order_by('full_name')
 
         zone_id = request.query_params.get('zone_id')
         if zone_id:
@@ -313,6 +421,10 @@ class UserViewSet(viewsets.GenericViewSet):
             action='added',
             changed_by=request.user,
         )
+        log_user_event(
+            action='zone_added', actor=request.user, target=user,
+            changes={'zone': {'old': None, 'new': zone.name}},
+        )
         logger.info(
             f'[USER] Zone {zone.name} assigned to {user.email} by {request.user.email}'
         )
@@ -351,6 +463,10 @@ class UserViewSet(viewsets.GenericViewSet):
             zone=zone,
             action='removed',
             changed_by=request.user,
+        )
+        log_user_event(
+            action='zone_removed', actor=request.user, target=user,
+            changes={'zone': {'old': zone.name, 'new': None}},
         )
         logger.info(
             f'[USER] Zone {zone.name} removed from {user.email} by {request.user.email}'

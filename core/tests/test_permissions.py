@@ -11,15 +11,15 @@ class IsAdminTest(TestCase):
         self.factory = APIRequestFactory()
         self.admin = User.objects.create_user(
             email='admin@test.com', password='Admin@123',
-            full_name='Admin User', role='admin',
+            full_name='Admin User', role='admin', phone='9000000011',
         )
         self.hd = User.objects.create_user(
             email='hd@test.com', password='HD@123',
-            full_name='HD User', role='helpdesk',
+            full_name='HD User', role='helpdesk', phone='9000000012',
         )
         self.engineer = User.objects.create_user(
             email='eng@test.com', password='Eng@123',
-            full_name='Engineer User', role='engineer',
+            full_name='Engineer User', role='engineer', phone='9000000013',
         )
 
     def _request_for(self, user):
@@ -45,15 +45,15 @@ class IsAdminOrHDTest(TestCase):
         self.factory = APIRequestFactory()
         self.admin = User.objects.create_user(
             email='admin@test.com', password='Admin@123',
-            full_name='Admin User', role='admin',
+            full_name='Admin User', role='admin', phone='9000000011',
         )
         self.hd = User.objects.create_user(
             email='hd@test.com', password='HD@123',
-            full_name='HD User', role='helpdesk',
+            full_name='HD User', role='helpdesk', phone='9000000012',
         )
         self.engineer = User.objects.create_user(
             email='eng@test.com', password='Eng@123',
-            full_name='Engineer User', role='engineer',
+            full_name='Engineer User', role='engineer', phone='9000000013',
         )
 
     def _request_for(self, user):

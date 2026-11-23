@@ -94,6 +94,15 @@ class ListComplaintsTest(BaseAPITest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['data']['results']), 2)
 
+    def test_public_reference_format_and_search(self):
+        self.auth_as(self.admin)
+        detail = self.client.get(f'/api/complaints/{self.complaint_one.id}/')
+        reference = detail.data['data']['reference']
+        self.assertRegex(reference, r'^CRM-\d{2}-\d{2}-\d{4}$')
+        response = self.client.get(f'/api/complaints/?search={reference}')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['results'][0]['reference'], reference)
+
     def test_engineer_gets_limited_data(self):
         self.auth_as(self.engineer)
         response = self.client.get('/api/complaints/')
@@ -103,7 +112,7 @@ class ListComplaintsTest(BaseAPITest):
         for result in results:
             self.assertEqual(
                 set(result.keys()),
-                {'id', 'zone', 'address', 'status', 'created_at'},
+                {'id', 'reference', 'zone', 'address', 'status', 'created_at'},
             )
 
     def test_filter_by_status(self):

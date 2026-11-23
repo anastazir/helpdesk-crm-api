@@ -14,15 +14,19 @@ class BaseAPITest(APITestCase):
     def setUp(self):
         self.admin = User.objects.create_user(
             email='admin@test.com', password='Admin@123',
-            full_name='Admin User', role='admin',
+            full_name='Admin User', role='admin', phone='9000000001',
+        )
+        self.supervisor = User.objects.create_user(
+            email='supervisor@test.com', password='Super@123',
+            full_name='Supervisor User', role='supervisor', phone='9000000002',
         )
         self.hd = User.objects.create_user(
             email='hd@test.com', password='HD@123',
-            full_name='HD User', role='helpdesk',
+            full_name='HD User', role='helpdesk', phone='9000000003',
         )
         self.engineer = User.objects.create_user(
             email='eng@test.com', password='Eng@123',
-            full_name='Engineer User', role='engineer',
+            full_name='Engineer User', role='engineer', phone='9000000004',
         )
         self.zone = Zone.objects.create(name='Test Zone', created_by=self.admin)
         self.issue = IssueType.objects.create(name='Monitor', order=9)

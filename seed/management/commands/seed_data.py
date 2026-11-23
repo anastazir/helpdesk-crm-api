@@ -14,7 +14,8 @@ from apps.complaints.models import (
     JobNote,
     StatusHistory,
 )
-from apps.users.models import User
+from apps.users.audit import log_user_event
+from apps.users.models import User, UserAuditLog
 from apps.zones.models import EngineerZoneAssignment, Zone
 
 logger = logging.getLogger('seed')
@@ -55,6 +56,7 @@ ISSUE_NAMES = [
 
 USER_ROWS = [
     ('Admin User', 'admin@crm.in', '1234', 'admin', [], True),
+    ('Supervisor One', 'supervisor@crm.in', '1234', 'supervisor', [], True),
     ('Priya Sharma', 'priya@crm.in', '1234', 'helpdesk', [], True),
     ('Meera Kapoor', 'meera@crm.in', '1234', 'helpdesk', [], True),
     ('Ravi Kumar', 'ravi@crm.in', '1234', 'engineer',
@@ -182,12 +184,13 @@ class Command(BaseCommand):
 
         self.stdout.write('[SEED] Creating users...', ending='')
         users = {}
-        for full_name, email, password, role, zone_names, is_active in USER_ROWS:
+        for row_index, (full_name, email, password, role, zone_names, is_active) in enumerate(USER_ROWS, start=1):
+            phone = str(9000000000 + row_index)
             existing = User.objects.filter(email=email).first()
             if existing is not None:
                 existing.full_name = full_name
                 existing.role = role
-                existing.phone = '9876543210'
+                existing.phone = phone
                 existing.is_active = is_active
                 existing.is_staff = role == 'admin' or existing.is_superuser
                 if not existing.is_superuser:
@@ -198,7 +201,7 @@ class Command(BaseCommand):
                 extra_fields = {
                     'full_name': full_name,
                     'role': role,
-                    'phone': '9876543210',
+                    'phone': phone,
                     'is_active': is_active,
                     'is_staff': role == 'admin',
                 }
@@ -225,6 +228,20 @@ class Command(BaseCommand):
                 continue
             user.created_by = admin
             user.save(update_fields=['created_by'])
+
+        for user in users.values():
+            if UserAuditLog.objects.filter(
+                target=user, action='created', source='backfill'
+            ).exists():
+                continue
+            log_user_event(
+                action='created',
+                actor=None if user == admin else admin,
+                target=user,
+                changes={'created': {'old': None, 'new': user.role}},
+                source='backfill',
+                note='Seed account creation.',
+            )
 
         self.stdout.write(f' done ({len(users)})')
 

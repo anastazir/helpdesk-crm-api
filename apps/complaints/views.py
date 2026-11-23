@@ -1,4 +1,6 @@
 import logging
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from django.db.models import Max, Q
 from django.utils import timezone
@@ -14,14 +16,22 @@ from apps.assistant.geocoding import GeocodeServiceError, geocode_location
 from apps.users.models import User
 from apps.users.serializers import UserMiniSerializer
 from core.pagination import StandardPagination
-from core.permissions import IsAdmin, IsAdminOrHD, IsEngineer
+from core.permissions import (
+    IsAdmin,
+    IsAdminOrHD,
+    IsAdminOrSupervisor,
+    IsAdminOrSupervisorOrHD,
+    IsEngineer,
+)
 from core.responses import error_response, success_response
 
 from .models import (
+    STATUS_CHOICES,
     VALID_STATUS_TRANSITIONS,
     Comment,
     Complaint,
     ComplaintAssignment,
+    ComplaintReferenceExhausted,
     FileUpload,
     IssueType,
     JobNote,
@@ -82,6 +92,109 @@ HD_TRANSITIONS = {
     ('parts_requested', 'parts_provided'),
     ('resolved', 'closed'),
 }
+IST = ZoneInfo('Asia/Kolkata')
+
+
+def _period_bounds(period):
+    now = timezone.localtime(timezone.now(), IST)
+    if period == 'today':
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, now
+    if period == 'week':
+        start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return start, now
+    if period == 'month':
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return start, now
+    if period == 'last_month':
+        current_start = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        previous_end = current_start
+        previous_start = (current_start - timedelta(days=1)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        return previous_start, previous_end
+    if period == 'total':
+        return None, None
+    return False
+
+
+@extend_schema(tags=['complaints'])
+class ComplaintKPIView(APIView):
+    permission_classes = [IsAdminOrSupervisorOrHD]
+
+    @extend_schema(tags=['complaints'])
+    def get(self, request):
+        queryset = Complaint.objects.all()
+        now = timezone.localtime(timezone.now(), IST)
+        periods = {}
+        for name in ('today', 'week', 'month', 'last_month'):
+            start, end = _period_bounds(name)
+            periods[name] = queryset.filter(
+                created_at__gte=start, created_at__lte=end
+            ).count()
+        by_status = {
+            value: queryset.filter(status=value).count()
+            for value, _ in STATUS_CHOICES
+        }
+        return success_response(
+            data={
+                'total': queryset.count(),
+                **periods,
+                'by_status': by_status,
+                'generated_at': now.isoformat(),
+            }
+        )
+
+
+@extend_schema(tags=['complaints'])
+class ZonePerformanceView(APIView):
+    permission_classes = [IsAdminOrSupervisorOrHD]
+
+    @extend_schema(tags=['complaints'])
+    def get(self, request):
+        from apps.zones.models import Zone
+
+        period = request.query_params.get('period')
+        bounds = (None, None)
+        if period:
+            bounds = _period_bounds(period)
+            if bounds is False:
+                return error_response(
+                    'Invalid period.',
+                    'Use today, week, month, last_month, or total.',
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+        active_statuses = [
+            'open', 'assigned', 'in_progress', 'parts_requested', 'parts_provided'
+        ]
+        zones = Zone.objects.filter(is_active=True).order_by('name')
+        data = []
+        for zone in zones:
+            zone_complaints = Complaint.objects.filter(zone=zone)
+            if bounds[0] is not None:
+                zone_complaints = zone_complaints.filter(
+                    created_at__gte=bounds[0], created_at__lte=bounds[1]
+                )
+            data.append(
+                {
+                    'zone_id': zone.id,
+                    'zone_name': zone.name,
+                    'total': zone_complaints.count(),
+                    'active': zone_complaints.filter(
+                        status__in=active_statuses
+                    ).count(),
+                    'closed': zone_complaints.filter(status='closed').count(),
+                    'engineers': zone.get_current_engineers().filter(
+                        is_deleted=False
+                    ).count(),
+                }
+            )
+        return success_response(data={'zones': data})
 
 
 @extend_schema(tags=['issues'])
@@ -106,7 +219,7 @@ class ComplaintViewSet(viewsets.GenericViewSet):
         if self.action == 'my':
             return [IsEngineer()]
         if self.action == 'assign':
-            return [IsAdminOrHD()]
+            return [IsAdminOrSupervisor()]
         if self.action == 'reopen':
             return [IsAdmin()]
         return [IsAuthenticated()]
@@ -127,7 +240,7 @@ class ComplaintViewSet(viewsets.GenericViewSet):
         return assignment is not None and assignment.engineer_id == user.id
 
     def _can_view(self, complaint, user):
-        if user.role in ['admin', 'helpdesk']:
+        if user.role in ['admin', 'supervisor', 'helpdesk']:
             return True
         return self._is_currently_assigned_engineer(complaint, user)
 
@@ -169,6 +282,20 @@ class ComplaintViewSet(viewsets.GenericViewSet):
                 assignments__unassigned_at__isnull=True,
             ).distinct()
 
+        period = request.query_params.get('period')
+        if period:
+            bounds = _period_bounds(period)
+            if bounds is False:
+                return error_response(
+                    'Invalid period.',
+                    'Use today, week, month, last_month, or total.',
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            if bounds[0] is not None:
+                queryset = queryset.filter(
+                    created_at__gte=bounds[0], created_at__lte=bounds[1]
+                )
+
         date_from = request.query_params.get('date_from')
         if date_from:
             parsed = parse_date(date_from)
@@ -185,7 +312,11 @@ class ComplaintViewSet(viewsets.GenericViewSet):
 
         search = request.query_params.get('search')
         if search:
-            search_filter = Q(caller_name__icontains=search) | Q(caller_phone__icontains=search)
+            search_filter = (
+                Q(reference__icontains=search)
+                | Q(caller_name__icontains=search)
+                | Q(caller_phone__icontains=search)
+            )
             if search.isdigit():
                 search_filter |= Q(id=int(search))
             queryset = queryset.filter(search_filter)
@@ -217,11 +348,18 @@ class ComplaintViewSet(viewsets.GenericViewSet):
         if data.get('latitude') is not None and data.get('longitude') is not None:
             data['geocode_updated_at'] = timezone.now()
 
-        complaint = Complaint.objects.create(
-            zone_id=zone_id,
-            created_by=request.user,
-            **data,
-        )
+        try:
+            complaint = Complaint.objects.create(
+                zone_id=zone_id,
+                created_by=request.user,
+                **data,
+            )
+        except ComplaintReferenceExhausted as exc:
+            return error_response(
+                str(exc),
+                'complaint_reference_exhausted',
+                status.HTTP_409_CONFLICT,
+            )
         complaint.issues.set(issue_ids)
 
         StatusHistory.objects.create(
@@ -277,6 +415,13 @@ class ComplaintViewSet(viewsets.GenericViewSet):
             return error_response(
                 'Closed complaints cannot be edited.',
                 'Closed complaints cannot be edited.',
+                status.HTTP_403_FORBIDDEN,
+            )
+
+        if request.user.role == 'supervisor':
+            return error_response(
+                'Supervisors can only assign or reassign engineers.',
+                'Forbidden.',
                 status.HTTP_403_FORBIDDEN,
             )
 
@@ -390,6 +535,12 @@ class ComplaintViewSet(viewsets.GenericViewSet):
     @extend_schema(tags=['complaints'], request=StatusUpdateSerializer)
     @action(detail=True, methods=['post'])
     def status(self, request, pk=None):
+        if request.user.role == 'supervisor':
+            return error_response(
+                'Supervisors can only assign or reassign engineers.',
+                'Forbidden.',
+                status.HTTP_403_FORBIDDEN,
+            )
         complaint = self.get_object()
         serializer = StatusUpdateSerializer(data=request.data)
         if not serializer.is_valid():

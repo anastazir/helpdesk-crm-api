@@ -16,6 +16,19 @@ class IsAdmin(BasePermission):
         return allowed
 
 
+class IsAdminOrSupervisor(BasePermission):
+    def has_permission(self, request, view):
+        allowed = request.user.is_authenticated and request.user.role in [
+            'admin', 'supervisor'
+        ]
+        if not allowed:
+            logger.warning(
+                f'[PERMISSION] IsAdminOrSupervisor denied for user {request.user} '
+                f'on {view.__class__.__name__}'
+            )
+        return allowed
+
+
 class IsAdminOrHD(BasePermission):
     def has_permission(self, request, view):
         allowed = request.user.is_authenticated and request.user.role in ['admin', 'helpdesk']
@@ -24,6 +37,14 @@ class IsAdminOrHD(BasePermission):
                 f'[PERMISSION] IsAdminOrHD denied for user {request.user} '
                 f'on {view.__class__.__name__}'
             )
+        return allowed
+
+
+class IsAdminOrSupervisorOrHD(BasePermission):
+    def has_permission(self, request, view):
+        allowed = request.user.is_authenticated and request.user.role in [
+            'admin', 'supervisor', 'helpdesk'
+        ]
         return allowed
 
 
