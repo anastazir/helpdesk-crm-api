@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'apps.complaints',
     'apps.exports',
     'apps.assistant',
+    'apps.whatsapp',
     'seed',
 ]
 
@@ -215,5 +216,27 @@ GEOCODE_USER_AGENT = config(
 GEOCODE_TIMEOUT = config('GEOCODE_TIMEOUT', default=12, cast=int)
 GEOCODE_CACHE_DAYS = config('GEOCODE_CACHE_DAYS', default=30, cast=int)
 GEOCODE_AI_ENABLED = config('GEOCODE_AI_ENABLED', default=True, cast=bool)
+
+WHATSAPP_ENABLED = config('WHATSAPP_ENABLED', default=False, cast=bool)
+WHATSAPP_GRAPH_VERSION = config('WHATSAPP_GRAPH_VERSION', default='v23.0')
+WHATSAPP_PHONE_NUMBER_ID = config('WHATSAPP_PHONE_ID', default='')
+WHATSAPP_BUSINESS_ACCOUNT_ID = config('WHATSAPP_ACCOUNT_ID', default='')
+WHATSAPP_ACCESS_TOKEN = config('WHATSAPP_ACCESS_TOKEN', default='')
+WHATSAPP_APP_SECRET = config('WHATSAPP_APP_SECRET', default='')
+WHATSAPP_VERIFY_TOKEN = config('WHATSAPP_VERIFY_TOKEN', default='')
+WHATSAPP_TEMPLATE_ASSIGNED = config(
+    'WHATSAPP_TEMPLATE_ASSIGNED',
+    default='complaint_assigned_engineer',
+)
+WHATSAPP_TEMPLATE_LANGUAGE = config(
+    'WHATSAPP_TEMPLATE_LANGUAGE',
+    default='en_US',
+)
+WHATSAPP_DEFAULT_COUNTRY_CODE = config(
+    'WHATSAPP_DEFAULT_COUNTRY_CODE',
+    default='91',
+)
+WHATSAPP_REQUEST_TIMEOUT = config('WHATSAPP_REQUEST_TIMEOUT', default=10, cast=int)
+WHATSAPP_SEND_SYNC = config('WHATSAPP_SEND_SYNC', default=True, cast=bool)
 
 AI_FEATURES_ENABLED = config('AI_FEATURES_ENABLED', default=True, cast=bool)

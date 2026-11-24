@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from django.db import transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -58,6 +59,18 @@ from .serializers import (
 )
 
 logger = logging.getLogger('apps.complaints')
+
+
+def _notify_whatsapp_assignment(assignment_id):
+    from apps.whatsapp.services import enqueue_assignment_notification
+
+    try:
+        enqueue_assignment_notification(assignment_id)
+    except Exception:
+        logger.exception(
+            '[WHATSAPP] Failed to enqueue assignment notification for #%s',
+            assignment_id,
+        )
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png'}
@@ -500,7 +513,7 @@ class ComplaintViewSet(viewsets.GenericViewSet):
             active_assignment.unassigned_by = request.user
             active_assignment.save(update_fields=['unassigned_at', 'unassigned_by'])
 
-        ComplaintAssignment.objects.create(
+        assignment = ComplaintAssignment.objects.create(
             complaint=complaint,
             engineer=engineer,
             assigned_by=request.user,
@@ -525,6 +538,13 @@ class ComplaintViewSet(viewsets.GenericViewSet):
             changed_by=request.user,
             remark=history_remark,
         )
+
+        if previous_engineer is None or previous_engineer.id != engineer.id:
+            transaction.on_commit(
+                lambda assignment_id=assignment.id: _notify_whatsapp_assignment(
+                    assignment_id
+                )
+            )
 
         logger.info(
             f'[COMPLAINT] #{complaint.id} assigned to {engineer.full_name} '

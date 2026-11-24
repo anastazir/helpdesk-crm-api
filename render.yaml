@@ -39,6 +39,28 @@ services:
         sync: false
       - key: GEOCODE_USER_AGENT
         sync: false
+      - key: WHATSAPP_ENABLED
+        value: "True"
+      - key: WHATSAPP_GRAPH_VERSION
+        value: v23.0
+      - key: WHATSAPP_PHONE_ID
+        sync: false
+      - key: WHATSAPP_ACCOUNT_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_TEMPLATE_ASSIGNED
+        value: complaint_assigned_engineer
+      - key: WHATSAPP_TEMPLATE_LANGUAGE
+        value: en_US
+      - key: WHATSAPP_DEFAULT_COUNTRY_CODE
+        value: "91"
+      - key: WHATSAPP_SEND_SYNC
+        value: "True"
       - key: GEOCODE_BASE_URL
         value: https://nominatim.openstreetmap.org
       - key: OPENROUTER_MODEL

@@ -40,6 +40,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
+    whatsapp_opt_in = models.BooleanField(default=False)
+    whatsapp_opt_in_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_opt_out_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_opt_in_source = models.CharField(max_length=50, blank=True, default='')
     deleted_at = models.DateTimeField(null=True, blank=True)
     deleted_by = models.ForeignKey(
         'self', on_delete=models.SET_NULL,

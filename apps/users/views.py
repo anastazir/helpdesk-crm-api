@@ -231,10 +231,13 @@ class UserViewSet(viewsets.GenericViewSet):
         serializer = UserUpdateSerializer(user, data=request.data, partial=True)
         if not serializer.is_valid():
             return error_response('Validation failed.', serializer.errors)
-        old_values = {field: getattr(user, field) for field in ['full_name', 'email', 'phone']}
+        old_values = {
+            field: getattr(user, field)
+            for field in ['full_name', 'email', 'phone', 'whatsapp_opt_in']
+        }
         serializer.save()
         changes = {}
-        for field in ['full_name', 'email', 'phone']:
+        for field in ['full_name', 'email', 'phone', 'whatsapp_opt_in']:
             old = old_values[field]
             new = getattr(user, field)
             if old != new:

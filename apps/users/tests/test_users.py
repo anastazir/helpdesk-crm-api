@@ -278,3 +278,65 @@ class UserAuditAndDeleteTest(BaseAPITest):
         self.engineer.refresh_from_db()
         self.assertEqual(self.engineer.email, 'new-engineer@test.com')
         self.assertEqual(self.engineer.phone, '9000000099')
+
+
+class UserWhatsAppConsentTest(BaseAPITest):
+    def test_admin_enables_whatsapp_consent(self):
+        self.auth_as(self.admin)
+        response = self.client.patch(
+            f'/api/users/{self.engineer.id}/',
+            {'whatsapp_opt_in': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertTrue(self.engineer.whatsapp_opt_in)
+        self.assertIsNotNone(self.engineer.whatsapp_opt_in_at)
+        self.assertEqual(self.engineer.whatsapp_opt_in_source, 'admin_form')
+
+    def test_admin_disables_whatsapp_consent(self):
+        self.engineer.whatsapp_opt_in = True
+        self.engineer.save(update_fields=['whatsapp_opt_in'])
+        self.auth_as(self.admin)
+        response = self.client.patch(
+            f'/api/users/{self.engineer.id}/',
+            {'whatsapp_opt_in': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertFalse(self.engineer.whatsapp_opt_in)
+        self.assertIsNotNone(self.engineer.whatsapp_opt_out_at)
+
+    def test_create_engineer_with_whatsapp_consent(self):
+        self.auth_as(self.admin)
+        response = self.client.post(
+            '/api/users/',
+            {
+                'full_name': 'Consent Engineer',
+                'email': 'consent@crm.in',
+                'phone': '9876512345',
+                'password': 'Password@123',
+                'role': 'engineer',
+                'whatsapp_opt_in': True,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        engineer = User.objects.get(email='consent@crm.in')
+        self.assertTrue(engineer.whatsapp_opt_in)
+        self.assertEqual(engineer.whatsapp_opt_in_source, 'admin_form')
+
+    def test_phone_change_resets_whatsapp_consent(self):
+        self.engineer.whatsapp_opt_in = True
+        self.engineer.save(update_fields=['whatsapp_opt_in'])
+        self.auth_as(self.admin)
+        response = self.client.patch(
+            f'/api/users/{self.engineer.id}/',
+            {'phone': '9876500011'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertFalse(self.engineer.whatsapp_opt_in)
+        self.assertIsNotNone(self.engineer.whatsapp_opt_out_at)

@@ -1,3 +1,4 @@
+from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
@@ -28,7 +29,9 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             'id', 'full_name', 'email', 'phone', 'role', 'is_active',
-            'created_at', 'current_zones', 'active_complaint_count',
+            'whatsapp_opt_in', 'whatsapp_opt_in_at', 'whatsapp_opt_out_at',
+            'whatsapp_opt_in_source', 'created_at', 'current_zones',
+            'active_complaint_count',
         ]
 
     @extend_schema_field(ZoneMiniSerializer(many=True))
@@ -125,10 +128,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
     zone_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, write_only=True
     )
+    whatsapp_opt_in = serializers.BooleanField(required=False, default=False)
 
     class Meta:
         model = User
-        fields = ['full_name', 'email', 'phone', 'password', 'role', 'zone_ids']
+        fields = [
+            'full_name', 'email', 'phone', 'password', 'role',
+            'zone_ids', 'whatsapp_opt_in',
+        ]
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
@@ -147,6 +154,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         zone_ids = validated_data.pop('zone_ids', [])
         password = validated_data.pop('password')
+        if validated_data.get('whatsapp_opt_in'):
+            validated_data['whatsapp_opt_in_at'] = timezone.now()
+            validated_data['whatsapp_opt_in_source'] = 'admin_form'
         request = self.context.get('request')
         if request is not None and request.user.is_authenticated:
             validated_data['created_by'] = request.user
@@ -168,7 +178,28 @@ class UserCreateSerializer(serializers.ModelSerializer):
 class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['full_name', 'email', 'phone']
+        fields = ['full_name', 'email', 'phone', 'whatsapp_opt_in']
+
+    def update(self, instance, validated_data):
+        phone_changed = (
+            'phone' in validated_data
+            and validated_data['phone'] != instance.phone
+        )
+        if phone_changed and 'whatsapp_opt_in' not in validated_data:
+            validated_data['whatsapp_opt_in'] = False
+            validated_data['whatsapp_opt_out_at'] = timezone.now()
+            validated_data['whatsapp_opt_in_source'] = 'phone_changed'
+
+        opt_in = validated_data.get('whatsapp_opt_in', None)
+        if opt_in is not None and opt_in != instance.whatsapp_opt_in:
+            if opt_in:
+                validated_data['whatsapp_opt_in_at'] = timezone.now()
+                validated_data['whatsapp_opt_out_at'] = None
+                validated_data['whatsapp_opt_in_source'] = 'admin_form'
+            else:
+                validated_data['whatsapp_opt_out_at'] = timezone.now()
+                validated_data['whatsapp_opt_in_source'] = 'admin_form'
+        return super().update(instance, validated_data)
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():
