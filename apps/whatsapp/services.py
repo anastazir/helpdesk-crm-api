@@ -60,6 +60,9 @@ def _mark_skipped(notification, reason):
 
 
 def enqueue_assignment_notification(assignment_id):
+    if not settings.WHATSAPP_ENABLED:
+        return None
+
     assignment = (
         ComplaintAssignment.objects
         .select_related(
