@@ -12,7 +12,11 @@ from django.views.decorators.http import require_http_methods
 
 from apps.users.models import User
 
-from .models import WhatsAppNotification, WhatsAppWebhookEvent
+from .models import (
+    WhatsAppNotification,
+    WhatsAppWebhookEvent,
+    whatsapp_feature_enabled,
+)
 from .phone import normalize_whatsapp_number
 
 logger = logging.getLogger('apps.whatsapp')
@@ -176,6 +180,9 @@ def webhook(request):
         )
     if not _valid_signature(raw_body, signature):
         return JsonResponse({'error': 'Invalid signature.'}, status=403)
+
+    if not whatsapp_feature_enabled():
+        return JsonResponse({'status': 'ignored'})
 
     try:
         payload = json.loads(raw_body.decode('utf-8'))

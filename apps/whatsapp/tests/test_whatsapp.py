@@ -263,3 +263,119 @@ class WhatsAppWebhookTest(BaseAPITest):
         self.engineer.refresh_from_db()
         self.assertTrue(self.engineer.whatsapp_opt_in)
         self.assertIsNotNone(self.engineer.whatsapp_opt_in_at)
+
+
+@override_settings(
+    WHATSAPP_ENABLED=True,
+    USE_WHATSAPP=True,
+    WHATSAPP_APP_SECRET='test-app-secret',
+    WHATSAPP_VERIFY_TOKEN='test-verify-token',
+)
+class WhatsAppSettingsAPITest(BaseAPITest):
+    def test_admin_can_toggle_use_whatsapp(self):
+        self.auth_as(self.admin)
+        response = self.client.get('/api/whatsapp/settings/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['data']['use_whatsapp'])
+
+        response = self.client.patch(
+            '/api/whatsapp/settings/',
+            {'use_whatsapp': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data['data']['use_whatsapp'])
+        self.assertFalse(response.data['data']['enabled'])
+
+        response = self.client.patch(
+            '/api/whatsapp/settings/',
+            {'use_whatsapp': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['data']['use_whatsapp'])
+
+    def test_non_admin_cannot_change_use_whatsapp(self):
+        self.auth_as(self.engineer)
+        response = self.client.patch(
+            '/api/whatsapp/settings/',
+            {'use_whatsapp': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_engineer_can_toggle_own_consent(self):
+        self.auth_as(self.engineer)
+        response = self.client.get('/api/whatsapp/me/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['phone'], self.engineer.phone)
+
+        response = self.client.patch(
+            '/api/whatsapp/me/',
+            {'whatsapp_opt_in': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertTrue(self.engineer.whatsapp_opt_in)
+        self.assertEqual(self.engineer.whatsapp_opt_in_source, 'self_service')
+        self.assertIsNotNone(self.engineer.whatsapp_opt_in_at)
+
+        response = self.client.patch(
+            '/api/whatsapp/me/',
+            {'whatsapp_opt_in': False},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.engineer.refresh_from_db()
+        self.assertFalse(self.engineer.whatsapp_opt_in)
+        self.assertIsNotNone(self.engineer.whatsapp_opt_out_at)
+
+    def test_complaint_detail_includes_whatsapp_status(self):
+        self.engineer.whatsapp_opt_in = True
+        self.engineer.save(update_fields=['whatsapp_opt_in'])
+        complaint = self.make_complaint()
+        assignment = ComplaintAssignment.objects.create(
+            complaint=complaint,
+            engineer=self.engineer,
+            assigned_by=self.supervisor,
+        )
+        WhatsAppNotification.objects.create(
+            assignment=assignment,
+            complaint=complaint,
+            engineer=self.engineer,
+            recipient_phone='919000000004',
+            template_name='complaint_assigned_engineer',
+            language='en_US',
+            status=WhatsAppNotification.STATUS_DELIVERED,
+            wamid='wamid.detail-1',
+        )
+        self.auth_as(self.engineer)
+        response = self.client.get(f'/api/complaints/{complaint.id}/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data['data']['whatsapp_notification']['status'],
+            'delivered',
+        )
+
+    @override_settings(USE_WHATSAPP=False)
+    def test_use_whatsapp_false_blocks_sending_and_hides_status(self):
+        self.engineer.whatsapp_opt_in = True
+        self.engineer.save(update_fields=['whatsapp_opt_in'])
+        complaint = self.make_complaint()
+        self.auth_as(self.supervisor)
+        with patch(
+            'apps.whatsapp.services.send_template_message',
+            return_value={'messages': [{'id': 'wamid.disabled'}]},
+        ) as sender:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(
+                    f'/api/complaints/{complaint.id}/assign/',
+                    {'engineer_id': self.engineer.id},
+                    format='json',
+                )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(
+            WhatsAppNotification.objects.filter(complaint=complaint).exists()
+        )
+        sender.assert_not_called()

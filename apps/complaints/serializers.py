@@ -89,6 +89,7 @@ class ComplaintDetailSerializer(serializers.ModelSerializer):
     created_by = UserMiniSerializer(read_only=True)
     assigned_engineer = serializers.SerializerMethodField()
     job_note = serializers.SerializerMethodField()
+    whatsapp_notification = serializers.SerializerMethodField()
     time_open_seconds = serializers.SerializerMethodField()
     time_in_status_seconds = serializers.SerializerMethodField()
 
@@ -102,7 +103,8 @@ class ComplaintDetailSerializer(serializers.ModelSerializer):
             'geocode_label', 'geocode_provider', 'geocode_updated_at',
             'map_radius_m',
             'created_at', 'created_by', 'assigned_engineer', 'job_note',
-            'time_open_seconds', 'time_in_status_seconds',
+            'whatsapp_notification', 'time_open_seconds',
+            'time_in_status_seconds',
         ]
 
     @extend_schema_field(UserMiniSerializer)
@@ -117,6 +119,29 @@ class ComplaintDetailSerializer(serializers.ModelSerializer):
         except JobNote.DoesNotExist:
             return None
         return JobNoteSerializer(job_note).data
+
+    @extend_schema_field(OpenApiTypes.OBJECT)
+    def get_whatsapp_notification(self, obj):
+        from apps.whatsapp.models import whatsapp_feature_enabled
+
+        if not whatsapp_feature_enabled():
+            return None
+        notification = (
+            obj.whatsapp_notifications
+            .order_by('-queued_at')
+            .first()
+        )
+        if notification is None:
+            return None
+        return {
+            'id': notification.id,
+            'status': notification.status,
+            'sent_at': notification.sent_at,
+            'delivered_at': notification.delivered_at,
+            'read_at': notification.read_at,
+            'failed_at': notification.failed_at,
+            'last_error': notification.last_error,
+        }
 
     @extend_schema_field(OpenApiTypes.INT)
     def get_time_open_seconds(self, obj):

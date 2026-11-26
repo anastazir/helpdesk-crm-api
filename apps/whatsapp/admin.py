@@ -1,6 +1,10 @@
 from django.contrib import admin
 
-from .models import WhatsAppNotification, WhatsAppWebhookEvent
+from .models import (
+    WhatsAppNotification,
+    WhatsAppSettings,
+    WhatsAppWebhookEvent,
+)
 
 
 @admin.register(WhatsAppNotification)
@@ -30,3 +34,9 @@ class WhatsAppWebhookEventAdmin(admin.ModelAdmin):
         'event_key', 'payload', 'received_at', 'processed_at',
         'processing_error',
     )
+
+
+@admin.register(WhatsAppSettings)
+class WhatsAppSettingsAdmin(admin.ModelAdmin):
+    list_display = ('id', 'use_whatsapp', 'updated_by', 'updated_at')
+    readonly_fields = ('updated_by', 'updated_at')

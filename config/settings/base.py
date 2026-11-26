@@ -218,6 +218,7 @@ GEOCODE_CACHE_DAYS = config('GEOCODE_CACHE_DAYS', default=30, cast=int)
 GEOCODE_AI_ENABLED = config('GEOCODE_AI_ENABLED', default=True, cast=bool)
 
 WHATSAPP_ENABLED = config('WHATSAPP_ENABLED', default=False, cast=bool)
+USE_WHATSAPP = config('USE_WHATSAPP', default=True, cast=bool)
 WHATSAPP_GRAPH_VERSION = config('WHATSAPP_GRAPH_VERSION', default='v23.0')
 WHATSAPP_PHONE_NUMBER_ID = config('WHATSAPP_PHONE_ID', default='')
 WHATSAPP_BUSINESS_ACCOUNT_ID = config('WHATSAPP_ACCOUNT_ID', default='')

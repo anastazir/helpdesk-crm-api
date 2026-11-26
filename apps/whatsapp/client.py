@@ -3,6 +3,8 @@ import logging
 import httpx
 from django.conf import settings
 
+from .models import whatsapp_feature_enabled
+
 logger = logging.getLogger('apps.whatsapp')
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -29,7 +31,7 @@ def _error_message(response):
 
 
 def send_template_message(to, template_name, language, components):
-    if not settings.WHATSAPP_ENABLED:
+    if not whatsapp_feature_enabled():
         raise WhatsAppAPIError('WhatsApp notifications are disabled.')
     if not settings.WHATSAPP_ACCESS_TOKEN:
         raise WhatsAppAPIError('WHATSAPP_ACCESS_TOKEN is not configured.')

@@ -93,7 +93,9 @@ class MeSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = [
-            'id', 'full_name', 'email', 'phone', 'role', 'is_active', 'created_at',
+            'id', 'full_name', 'email', 'phone', 'role', 'is_active',
+            'whatsapp_opt_in', 'whatsapp_opt_in_at', 'whatsapp_opt_out_at',
+            'whatsapp_opt_in_source', 'created_at',
         ]
 
 

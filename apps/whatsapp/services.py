@@ -7,7 +7,7 @@ from django.utils import timezone
 from apps.complaints.models import ComplaintAssignment
 
 from .client import WhatsAppAPIError, send_template_message
-from .models import WhatsAppNotification
+from .models import WhatsAppNotification, whatsapp_feature_enabled
 from .phone import InvalidWhatsAppNumber, normalize_whatsapp_number
 
 logger = logging.getLogger('apps.whatsapp')
@@ -60,7 +60,7 @@ def _mark_skipped(notification, reason):
 
 
 def enqueue_assignment_notification(assignment_id):
-    if not settings.WHATSAPP_ENABLED:
+    if not whatsapp_feature_enabled():
         return None
 
     assignment = (
@@ -130,7 +130,7 @@ def send_assignment_notification(notification_id):
     }:
         return notification
 
-    if not settings.WHATSAPP_ENABLED:
+    if not whatsapp_feature_enabled():
         return _mark_skipped(notification, 'WhatsApp notifications are disabled.')
 
     if not notification.engineer.whatsapp_opt_in:
