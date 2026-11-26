@@ -8,7 +8,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.views import APIView
 
-from core.permissions import IsAdmin, IsAdminOrHD
+from core.permissions import IsAdmin, IsAdminOrHD, IsAdminOrSupervisorOrHD
 from core.responses import error_response, success_response
 
 from .builder import (
@@ -34,7 +34,7 @@ logger = logging.getLogger('apps.exports')
 
 @extend_schema(tags=['export'])
 class ExportPreviewView(APIView):
-    permission_classes = [IsAdminOrHD]
+    permission_classes = [IsAdminOrSupervisorOrHD]
     serializer_class = ExportPreviewSerializer
 
     @extend_schema(
@@ -83,7 +83,7 @@ class ExportPreviewView(APIView):
 
 @extend_schema(tags=['export'])
 class ExportDownloadView(APIView):
-    permission_classes = [IsAdminOrHD]
+    permission_classes = [IsAdminOrSupervisorOrHD]
     serializer_class = ExportDownloadSerializer
 
     @extend_schema(

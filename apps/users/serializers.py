@@ -137,6 +137,13 @@ class UserCreateSerializer(serializers.ModelSerializer):
             'zone_ids', 'whatsapp_opt_in',
         ]
 
+    def validate_role(self, value):
+        if value == 'admin':
+            raise serializers.ValidationError(
+                'Admin users can only be created from the backend.'
+            )
+        return value
+
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError('A user with this email already exists.')

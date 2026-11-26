@@ -228,6 +228,11 @@ class UserViewSet(viewsets.GenericViewSet):
     @extend_schema(tags=['users'], request=UserUpdateSerializer, responses={200: UserDetailSerializer})
     def partial_update(self, request, pk=None):
         user = self.get_object()
+        if user.role == 'admin':
+            return error_response(
+                'Admin users cannot be modified from the API.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         serializer = UserUpdateSerializer(user, data=request.data, partial=True)
         if not serializer.is_valid():
             return error_response('Validation failed.', serializer.errors)
@@ -255,6 +260,11 @@ class UserViewSet(viewsets.GenericViewSet):
         user = self.get_object()
         if user.is_deleted:
             return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
+        if user.role == 'admin':
+            return error_response(
+                'Admin users cannot be modified from the API.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         if user.id == request.user.id:
             return error_response('You cannot disable your own account.', status_code=status.HTTP_403_FORBIDDEN)
         if user.role == 'admin' and not User.objects.filter(
@@ -277,6 +287,11 @@ class UserViewSet(viewsets.GenericViewSet):
         user = self.get_object()
         if user.is_deleted:
             return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
+        if user.role == 'admin':
+            return error_response(
+                'Admin users cannot be modified from the API.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         user.is_active = True
         user.save(update_fields=['is_active'])
         log_user_event(action='enabled', actor=request.user, target=user)
@@ -345,6 +360,11 @@ class UserViewSet(viewsets.GenericViewSet):
             return error_response('User not found.', status_code=status.HTTP_404_NOT_FOUND)
         if user.id == request.user.id:
             return error_response('You cannot delete your own account.', status_code=status.HTTP_403_FORBIDDEN)
+        if user.role == 'admin':
+            return error_response(
+                'Admin users cannot be modified from the API.',
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
         active_assignments = user.complaint_assignments.filter(
             unassigned_at__isnull=True,
         ).exclude(complaint__status='closed')
